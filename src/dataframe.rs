@@ -3,10 +3,9 @@ use crate::prelude::*;
 use crate::series::JsSeries;
 use napi::JsUnknown;
 use polars::frame::row::{infer_schema, Row};
-use polars::frame::NullStrategy;
+use polars_io::csv::write::CsvWriterOptions;
 use polars_io::mmap::MmapBytesReader;
 use polars_io::RowIndex;
-
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::File;
@@ -31,12 +30,12 @@ impl From<DataFrame> for JsDataFrame {
     }
 }
 
-pub(crate) fn to_series_collection(ps: Array) -> Vec<Series> {
+pub(crate) fn to_series_collection(ps: Array) -> Vec<Column> {
     let len = ps.len();
     (0..len)
         .map(|idx| {
             let item: &JsSeries = ps.get(idx).unwrap().unwrap();
-            item.series.clone()
+            item.series.clone().into()
         })
         .collect()
 }
@@ -67,9 +66,8 @@ pub struct ReadCsvOptions {
     pub num_threads: Option<u32>,
     pub path: Option<String>,
     pub dtypes: Option<HashMap<String, Wrap<DataType>>>,
-    pub sample_size: u32,
     pub chunk_size: u32,
-    pub comment_char: Option<String>,
+    pub comment_prefix: Option<String>,
     pub null_values: Option<Wrap<NullValues>>,
     pub quote_char: Option<String>,
     pub skip_rows_after_header: u32,
@@ -97,7 +95,13 @@ fn mmap_reader_to_df<'a>(
         .projection
         .map(|p: Vec<u32>| p.into_iter().map(|p| p as usize).collect());
 
-    let quote_char = options.quote_char.map_or(None, |q| if q.is_empty() { None } else { Some(q.as_bytes()[0]) } );
+    let quote_char = options.quote_char.map_or(None, |q| {
+        if q.is_empty() {
+            None
+        } else {
+            Some(q.as_bytes()[0])
+        }
+    });
 
     let encoding = match options.encoding.as_ref() {
         "utf8" => CsvEncoding::Utf8,
@@ -124,13 +128,16 @@ fn mmap_reader_to_df<'a>(
         .with_ignore_errors(options.ignore_errors)
         .with_rechunk(options.rechunk)
         .with_chunk_size(options.chunk_size as usize)
-        .with_columns(options.columns.map(|x| x.into_iter().map(PlSmallStr::from_string).collect()))
+        .with_columns(
+            options
+                .columns
+                .map(|x| x.into_iter().map(PlSmallStr::from_string).collect()),
+        )
         .with_n_threads(options.num_threads.map(|i| i as usize))
         .with_schema_overwrite(overwrite_dtype.map(Arc::new))
         .with_schema(options.schema.map(|schema| Arc::new(schema.0)))
         .with_low_memory(options.low_memory)
         .with_row_index(row_count)
-        .with_sample_size(options.sample_size as usize)
         .with_skip_rows_after_header(options.skip_rows_after_header as usize)
         .with_raise_if_empty(options.raise_if_empty)
         .with_parse_options(
@@ -138,7 +145,7 @@ fn mmap_reader_to_df<'a>(
                 .with_separator(options.sep.unwrap_or(",".to_owned()).as_bytes()[0])
                 .with_encoding(encoding)
                 .with_missing_is_null(options.missing_is_null)
-                .with_comment_prefix(options.comment_char.as_deref())
+                .with_comment_prefix(options.comment_prefix.as_deref())
                 .with_null_values(null_values)
                 .with_try_parse_dates(options.try_parse_dates)
                 .with_quote_char(quote_char)
@@ -435,27 +442,26 @@ pub fn from_rows(
             infer_schema(pairs, infer_schema_length)
         }
     };
-    let len = rows.len();
-    let it: Vec<Row> = (0..len)
+    let it: Vec<Row> = (0..rows.len())
         .into_iter()
         .map(|idx| {
             let obj = rows
                 .get::<Object>(idx as u32)
                 .unwrap_or(None)
                 .unwrap_or_else(|| env.create_object().unwrap());
+
             Row(schema
                 .iter_fields()
                 .map(|fld| {
-                    let dtype = fld.dtype().clone();
-                    let key = fld.name();
-                    if let Ok(unknown) = obj.get(key) {
-                        let av = match unknown {
-                            Some(unknown) => unsafe {
-                                coerce_js_anyvalue(unknown, dtype).unwrap_or(AnyValue::Null)
-                            },
-                            None => AnyValue::Null,
-                        };
-                        av
+                    let dtype: &DataType = fld.dtype();
+                    let key: &PlSmallStr = fld.name();
+                    if let Ok(unknown) = obj.get::<&polars::prelude::PlSmallStr, JsUnknown>(key) {
+                        match unknown {
+                            Some(unknown) => {
+                                coerce_js_anyvalue(unknown, dtype.clone()).unwrap_or(AnyValue::Null)
+                            }
+                            _ => AnyValue::Null,
+                        }
                     } else {
                         AnyValue::Null
                     }
@@ -508,10 +514,10 @@ impl JsDataFrame {
     #[napi(constructor)]
     pub fn from_columns(columns: Array) -> napi::Result<JsDataFrame> {
         let len = columns.len();
-        let cols: Vec<Series> = (0..len)
+        let cols: Vec<Column> = (0..len)
             .map(|idx| {
                 let item: &JsSeries = columns.get(idx).unwrap().unwrap();
-                item.series.clone()
+                item.series.clone().into()
             })
             .collect();
 
@@ -621,6 +627,8 @@ impl JsDataFrame {
                 right_by: None,
                 tolerance: None,
                 tolerance_str: None,
+                allow_eq: true,
+                check_sortedness: true,
             }),
             "cross" => JoinType::Cross,
             _ => panic!("not supported"),
@@ -628,8 +636,7 @@ impl JsDataFrame {
 
         let df = self
             .df
-            .join
-            (
+            .join(
                 &other.df,
                 left_on,
                 right_on,
@@ -638,6 +645,7 @@ impl JsDataFrame {
                     suffix: suffix.map_or(None, |s| Some(PlSmallStr::from_string(s))),
                     ..Default::default()
                 },
+                None,
             )
             .map_err(JsPolarsErr::from)?;
         Ok(JsDataFrame::new(df))
@@ -645,7 +653,13 @@ impl JsDataFrame {
 
     #[napi(catch_unwind)]
     pub fn get_columns(&self) -> Vec<JsSeries> {
-        let cols = self.df.get_columns();
+        let cols: Vec<Series> = self
+            .df
+            .get_columns()
+            .iter()
+            .map(Column::as_materialized_series)
+            .cloned()
+            .collect();
         to_jsseries_collection(cols.to_vec())
     }
 
@@ -657,9 +671,7 @@ impl JsDataFrame {
 
     #[napi(setter, js_name = "columns", catch_unwind)]
     pub fn set_columns(&mut self, names: Vec<&str>) -> napi::Result<()> {
-        self.df
-            .set_column_names(names)
-            .map_err(JsPolarsErr::from)?;
+        self.df.set_column_names(names).map_err(JsPolarsErr::from)?;
         Ok(())
     }
 
@@ -678,7 +690,7 @@ impl JsDataFrame {
     }
     #[napi(catch_unwind)]
     pub fn n_chunks(&self) -> napi::Result<u32> {
-        let n = self.df.n_chunks();
+        let n = self.df.first_col_n_chunks();
         Ok(n as u32)
     }
 
@@ -696,7 +708,7 @@ impl JsDataFrame {
     }
     #[napi(getter, catch_unwind)]
     pub fn schema(&self) -> Wrap<Schema> {
-        self.df.schema().into()
+        Schema::from_iter(self.df.schema().iter_fields().collect::<Vec<_>>()).into()
     }
     #[napi(catch_unwind)]
     pub fn hstack_mut(&mut self, columns: Array) -> napi::Result<()> {
@@ -728,7 +740,9 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn drop_in_place(&mut self, name: String) -> napi::Result<JsSeries> {
         let s = self.df.drop_in_place(&name).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series: s })
+        Ok(JsSeries {
+            series: s.take_materialized_series(),
+        })
     }
     #[napi(catch_unwind)]
     pub fn drop_nulls(&self, subset: Option<Vec<String>>) -> napi::Result<JsDataFrame> {
@@ -748,7 +762,7 @@ impl JsDataFrame {
     pub fn select_at_idx(&self, idx: i64) -> Option<JsSeries> {
         self.df
             .select_at_idx(idx as usize)
-            .map(|s| JsSeries::new(s.clone()))
+            .map(|s| JsSeries::new(s.clone().take_materialized_series()))
     }
 
     #[napi(catch_unwind)]
@@ -760,7 +774,7 @@ impl JsDataFrame {
         let series = self
             .df
             .column(&name)
-            .map(|s| JsSeries::new(s.clone()))
+            .map(|s| JsSeries::new(s.clone().take_materialized_series()))
             .map_err(JsPolarsErr::from)?;
         Ok(series)
     }
@@ -958,13 +972,13 @@ impl JsDataFrame {
         id_vars: Vec<String>,
         value_vars: Vec<String>,
         variable_name: Option<String>,
-        value_name: Option<String>
+        value_name: Option<String>,
     ) -> napi::Result<JsDataFrame> {
         let args = UnpivotArgsIR {
             on: strings_to_pl_smallstr(value_vars),
             index: strings_to_pl_smallstr(id_vars),
             variable_name: variable_name.map(|s| s.into()),
-            value_name: value_name.map(|s| s.into())
+            value_name: value_name.map(|s| s.into()),
         };
 
         let df = self.df.unpivot2(args).map_err(JsPolarsErr::from)?;
@@ -1025,18 +1039,18 @@ impl JsDataFrame {
             .df
             .mean_horizontal(null_strategy.0)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.into()))
+        Ok(s.map(|s| s.take_materialized_series().into()))
     }
     #[napi(catch_unwind)]
     pub fn hmax(&self) -> napi::Result<Option<JsSeries>> {
         let s = self.df.max_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.into()))
+        Ok(s.map(|s| s.take_materialized_series().into()))
     }
 
     #[napi(catch_unwind)]
     pub fn hmin(&self) -> napi::Result<Option<JsSeries>> {
         let s = self.df.min_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.into()))
+        Ok(s.map(|s| s.take_materialized_series().into()))
     }
 
     #[napi(catch_unwind)]
@@ -1045,7 +1059,7 @@ impl JsDataFrame {
             .df
             .sum_horizontal(null_strategy.0)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.into()))
+        Ok(s.map(|s| s.take_materialized_series().into()))
     }
     #[napi(catch_unwind)]
     pub fn to_dummies(
@@ -1324,23 +1338,9 @@ impl JsDataFrame {
     pub fn write_csv(
         &mut self,
         path_or_buffer: JsUnknown,
-        options: WriteCsvOptions,
+        options: Wrap<CsvWriterOptions>,
         env: Env,
     ) -> napi::Result<()> {
-        let include_header = options.include_header.unwrap_or(true);
-        let sep = options.sep.unwrap_or(",".to_owned()).as_bytes()[0];
-        let quote = options.quote.unwrap_or("\"".to_owned()).as_bytes()[0];
-        let include_bom = options.include_bom.unwrap_or(false);
-        let line_terminator = options.line_terminator.unwrap_or("\n".to_owned());
-        let batch_size = NonZeroUsize::new(options.batch_size.unwrap_or(1024) as usize);
-        let date_format = options.date_format;
-        let time_format = options.time_format;
-        let datetime_format = options.datetime_format;
-        let float_precision: Option<usize> = options.float_precision.map(|fp| fp as usize);
-        let null_value = options
-            .null_value
-            .unwrap_or(SerializeOptions::default().null);
-
         match path_or_buffer.get_type()? {
             ValueType::String => {
                 let path: napi::JsString = unsafe { path_or_buffer.cast() };
@@ -1349,17 +1349,17 @@ impl JsDataFrame {
                 let f = std::fs::File::create(path).unwrap();
                 let f = BufWriter::new(f);
                 CsvWriter::new(f)
-                    .include_bom(include_bom)
-                    .include_header(include_header)
-                    .with_separator(sep)
-                    .with_line_terminator(line_terminator)
-                    .with_batch_size(batch_size.unwrap())
-                    .with_datetime_format(datetime_format)
-                    .with_date_format(date_format)
-                    .with_time_format(time_format)
-                    .with_float_precision(float_precision)
-                    .with_null_value(null_value)
-                    .with_quote_char(quote)
+                    .include_bom(options.0.include_bom)
+                    .include_header(options.0.include_header)
+                    .with_separator(options.0.serialize_options.separator)
+                    .with_line_terminator(options.0.serialize_options.line_terminator)
+                    .with_batch_size(options.0.batch_size)
+                    .with_datetime_format(options.0.serialize_options.datetime_format)
+                    .with_date_format(options.0.serialize_options.date_format)
+                    .with_time_format(options.0.serialize_options.time_format)
+                    .with_float_precision(options.0.serialize_options.float_precision)
+                    .with_null_value(options.0.serialize_options.null)
+                    .with_quote_char(options.0.serialize_options.quote_char)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1368,17 +1368,17 @@ impl JsDataFrame {
                 let writeable = JsWriteStream { inner, env: &env };
 
                 CsvWriter::new(writeable)
-                    .include_bom(include_bom)
-                    .include_header(include_header)
-                    .with_separator(sep)
-                    .with_line_terminator(line_terminator)
-                    .with_batch_size(batch_size.unwrap())
-                    .with_datetime_format(datetime_format)
-                    .with_date_format(date_format)
-                    .with_time_format(time_format)
-                    .with_float_precision(float_precision)
-                    .with_null_value(null_value)
-                    .with_quote_char(quote)
+                    .include_bom(options.0.include_bom)
+                    .include_header(options.0.include_header)
+                    .with_separator(options.0.serialize_options.separator)
+                    .with_line_terminator(options.0.serialize_options.line_terminator)
+                    .with_batch_size(options.0.batch_size)
+                    .with_datetime_format(options.0.serialize_options.datetime_format)
+                    .with_date_format(options.0.serialize_options.date_format)
+                    .with_time_format(options.0.serialize_options.time_format)
+                    .with_float_precision(options.0.serialize_options.float_precision)
+                    .with_null_value(options.0.serialize_options.null)
+                    .with_quote_char(options.0.serialize_options.quote_char)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1394,8 +1394,6 @@ impl JsDataFrame {
         compression: Wrap<ParquetCompression>,
         env: Env,
     ) -> napi::Result<()> {
-        let compression = compression.0;
-
         match path_or_buffer.get_type()? {
             ValueType::String => {
                 let path: napi::JsString = unsafe { path_or_buffer.cast() };
@@ -1404,7 +1402,7 @@ impl JsDataFrame {
                 let f = std::fs::File::create(path).unwrap();
                 let f = BufWriter::new(f);
                 ParquetWriter::new(f)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1413,7 +1411,7 @@ impl JsDataFrame {
                 let writeable = JsWriteStream { inner, env: &env };
 
                 ParquetWriter::new(writeable)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1428,8 +1426,6 @@ impl JsDataFrame {
         compression: Wrap<Option<IpcCompression>>,
         env: Env,
     ) -> napi::Result<()> {
-        let compression = compression.0;
-
         match path_or_buffer.get_type()? {
             ValueType::String => {
                 let path: napi::JsString = unsafe { path_or_buffer.cast() };
@@ -1437,7 +1433,7 @@ impl JsDataFrame {
                 let f = std::fs::File::create(path).unwrap();
                 let f = BufWriter::new(f);
                 IpcWriter::new(f)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1445,7 +1441,7 @@ impl JsDataFrame {
                 let inner: napi::JsObject = unsafe { path_or_buffer.cast() };
                 let writeable = JsWriteStream { inner, env: &env };
                 IpcWriter::new(writeable)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1460,8 +1456,6 @@ impl JsDataFrame {
         compression: Wrap<Option<IpcCompression>>,
         env: Env,
     ) -> napi::Result<()> {
-        let compression = compression.0;
-
         match path_or_buffer.get_type()? {
             ValueType::String => {
                 let path: napi::JsString = unsafe { path_or_buffer.cast() };
@@ -1469,7 +1463,7 @@ impl JsDataFrame {
                 let f = std::fs::File::create(path).unwrap();
                 let f = BufWriter::new(f);
                 IpcStreamWriter::new(f)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1477,7 +1471,7 @@ impl JsDataFrame {
                 let inner: napi::JsObject = unsafe { path_or_buffer.cast() };
                 let writeable = JsWriteStream { inner, env: &env };
                 IpcStreamWriter::new(writeable)
-                    .with_compression(compression)
+                    .with_compression(compression.0)
                     .finish(&mut self.df)
                     .map_err(JsPolarsErr::from)?;
             }
@@ -1628,56 +1622,79 @@ fn obj_to_pairs(rows: &Array, len: usize) -> impl '_ + Iterator<Item = Vec<(Stri
     let len = std::cmp::min(len, rows.len() as usize);
     (0..len).map(move |idx| {
         let obj = rows.get::<Object>(idx as u32).unwrap().unwrap();
-
         let keys = Object::keys(&obj).unwrap();
         keys.iter()
             .map(|key| {
                 let value = obj.get::<_, napi::JsUnknown>(&key).unwrap_or(None);
-                let dtype = match value {
-                    Some(val) => {
-                        let ty = val.get_type().unwrap();
-                        match ty {
-                            ValueType::Boolean => DataType::Boolean,
-                            ValueType::Number => DataType::Float64,
-                            ValueType::String => DataType::String,
-                            ValueType::Object => {
-                                if val.is_array().unwrap() {
-                                    let arr: napi::JsObject = unsafe { val.cast() };
-                                    let len = arr.get_array_length().unwrap();
-                                    // dont compare too many items, as it could be expensive
-                                    let max_take = std::cmp::min(len as usize, 10);
-                                    let mut dtypes: Vec<DataType> =
-                                        Vec::with_capacity(len as usize);
-
-                                    for idx in 0..max_take {
-                                        let item: napi::JsUnknown =
-                                            arr.get_element(idx as u32).unwrap();
-                                        let ty = item.get_type().unwrap();
-                                        let dt: Wrap<DataType> = ty.into();
-                                        dtypes.push(dt.0)
-                                    }
-                                    let dtype = coerce_data_type(&dtypes);
-
-                                    DataType::List(dtype.into())
-                                } else if val.is_date().unwrap() {
-                                    DataType::Datetime(TimeUnit::Milliseconds, None)
-                                } else {
-                                    DataType::Struct(vec![])
-                                }
-                            }
-                            ValueType::BigInt => DataType::UInt64,
-                            _ => DataType::Null,
-                        }
-                    }
-                    None => DataType::Null,
-                };
-                (key.to_owned(), dtype)
+                (key.to_owned(), obj_to_type(value))
             })
             .collect()
     })
 }
 
-unsafe fn coerce_js_anyvalue<'a>(val: JsUnknown, dtype: DataType) -> JsResult<AnyValue<'a>> {
+fn obj_to_type(value: Option<JsUnknown>) -> DataType {
+    match value {
+        Some(val) => {
+            let ty = val.get_type().unwrap();
+            match ty {
+                ValueType::Boolean => DataType::Boolean,
+                ValueType::Number => DataType::Float64,
+                ValueType::BigInt => DataType::UInt64,
+                ValueType::String => DataType::String,
+                ValueType::Object => {
+                    if val.is_array().unwrap() {
+                        let arr: napi::JsObject = unsafe { val.cast() };
+                        let len = arr.get_array_length().unwrap();
+                        if len == 0 {
+                            DataType::List(DataType::Null.into())
+                        } else {
+                            // dont compare too many items, as it could be expensive
+                            let max_take = std::cmp::min(len as usize, 10);
+                            let mut dtypes: Vec<DataType> = Vec::with_capacity(len as usize);
+
+                            for idx in 0..max_take {
+                                let item: napi::JsUnknown = arr.get_element(idx as u32).unwrap();
+                                let ty = item.get_type().unwrap();
+                                let dt: Wrap<DataType> = ty.into();
+                                dtypes.push(dt.0)
+                            }
+                            let dtype = coerce_data_type(&dtypes);
+
+                            DataType::List(dtype.into())
+                        }
+                    } else if val.is_date().unwrap() {
+                        DataType::Datetime(TimeUnit::Milliseconds, None)
+                    } else {
+                        let inner_val: napi::JsObject = unsafe { val.cast() };
+                        let inner_keys = Object::keys(&inner_val).unwrap();
+                        let mut fldvec: Vec<Field> = Vec::with_capacity(inner_keys.len() as usize);
+
+                        inner_keys.iter().for_each(|key| {
+                            let inner_val = inner_val.get::<_, napi::JsUnknown>(&key).unwrap();
+                            let dtype = match inner_val.as_ref().unwrap().get_type().unwrap() {
+                                ValueType::Boolean => DataType::Boolean,
+                                ValueType::Number => DataType::Float64,
+                                ValueType::BigInt => DataType::UInt64,
+                                ValueType::String => DataType::String,
+                                // determine struct type using a recursive func
+                                ValueType::Object => obj_to_type(inner_val),
+                                _ => DataType::Null,
+                            };
+
+                            let fld = Field::new(key.into(), dtype);
+                            fldvec.push(fld);
+                        });
+                        DataType::Struct(fldvec)
+                    }
+                }
+                _ => DataType::Null,
+            }
+        }
+        None => DataType::Null,
+    }
+}
+
+fn coerce_js_anyvalue<'a>(val: JsUnknown, dtype: DataType) -> JsResult<AnyValue<'a>> {
     use DataType::*;
     let vtype = val.get_type().unwrap();
     match (vtype, dtype) {
@@ -1748,20 +1765,62 @@ unsafe fn coerce_js_anyvalue<'a>(val: JsUnknown, dtype: DataType) -> JsResult<An
             AnyValue::Date(n)
         }),
         (ValueType::BigInt | ValueType::Number, Datetime(_, _)) => {
-            i64::from_js(val).map(|d| AnyValue::Datetime(d, TimeUnit::Milliseconds, &None))
+            i64::from_js(val).map(|d| AnyValue::Datetime(d, TimeUnit::Milliseconds, None))
         }
         (ValueType::Object, DataType::Datetime(_, _)) => {
             if val.is_date()? {
-                let d: napi::JsDate = val.cast();
+                let d: napi::JsDate = unsafe { val.cast() };
                 let d = d.value_of()?;
-                Ok(AnyValue::Datetime(d as i64, TimeUnit::Milliseconds, &None))
+                Ok(AnyValue::Datetime(d as i64, TimeUnit::Milliseconds, None))
             } else {
                 Ok(AnyValue::Null)
             }
         }
         (ValueType::Object, DataType::List(_)) => {
-            let s = val.to_series();
+            let s = unsafe { val.to_series() };
             Ok(AnyValue::List(s))
+        }
+        (ValueType::Object, DataType::Struct(fields)) => {
+            let number_of_fields: i8 = fields.len().try_into().map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "the number of `fields` cannot be larger than i8::MAX {e:?}"
+                ))
+            })?;
+
+            let inner_val: napi::JsObject = unsafe { val.cast() };
+            let mut val_vec: Vec<polars::prelude::AnyValue<'_>> =
+                Vec::with_capacity(number_of_fields as usize);
+            fields.iter().for_each(|fld| {
+                let single_val = inner_val
+                    .get::<_, napi::JsUnknown>(&fld.name)
+                    .unwrap()
+                    .unwrap();
+                let vv = match &fld.dtype {
+                    DataType::Boolean => {
+                        AnyValue::Boolean(single_val.coerce_to_bool().unwrap().get_value().unwrap())
+                    }
+                    DataType::String => AnyValue::from_js(single_val).expect("Expecting string"),
+                    DataType::Int16 => AnyValue::Int16(
+                        single_val.coerce_to_number().unwrap().get_int32().unwrap() as i16,
+                    ),
+                    DataType::Int32 => {
+                        AnyValue::Int32(single_val.coerce_to_number().unwrap().get_int32().unwrap())
+                    }
+                    DataType::Int64 => {
+                        AnyValue::Int64(single_val.coerce_to_number().unwrap().get_int64().unwrap())
+                    }
+                    DataType::Float64 => AnyValue::Float64(
+                        single_val.coerce_to_number().unwrap().get_double().unwrap(),
+                    ),
+                    DataType::Struct(_) => {
+                        coerce_js_anyvalue(single_val, fld.dtype.clone()).unwrap()
+                    }
+                    _ => AnyValue::Null,
+                };
+                val_vec.push(vv);
+            });
+
+            Ok(AnyValue::StructOwned(Box::new((val_vec, fields))))
         }
         _ => Ok(AnyValue::Null),
     }

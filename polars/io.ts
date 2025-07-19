@@ -4,7 +4,7 @@ import type { DataType } from "./datatypes";
 import { concat } from "./functions";
 import pli from "./internals/polars_internal";
 import { type LazyDataFrame, _LazyDataFrame } from "./lazy/dataframe";
-import type { RowCount, ScanParquetOptions } from "./types";
+import type { ReadParquetOptions, RowCount, ScanParquetOptions } from "./types";
 import { isPath } from "./utils";
 
 export interface ReadCsvOptions {
@@ -22,9 +22,8 @@ export interface ReadCsvOptions {
   encoding: "utf8" | "utf8-lossy";
   numThreads: number;
   dtypes: Record<string, DataType>;
-  sampleSize: number;
   lowMemory: boolean;
-  commentChar: string;
+  commentPrefix: string;
   quoteChar: string;
   eolChar: string;
   nullValues: string | Array<string> | Record<string, string>;
@@ -44,7 +43,6 @@ const readCsvDefaultOptions: Partial<ReadCsvOptions> = {
   ignoreErrors: true,
   chunkSize: 10000,
   skipRows: 0,
-  sampleSize: 1024,
   sep: ",",
   rechunk: false,
   encoding: "utf8",
@@ -169,7 +167,7 @@ export function readRecords(
  * @param options.dtype -Overwrite the dtypes during inference.
  * @param options.schema -Set the CSV file's schema. This only accepts datatypes that are implemented in the csv parser and expects a complete Schema.
  * @param options.lowMemory - Reduce memory usage in expense of performance.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
  * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
  * @param options.nullValues - Values to interpret as null values. You can provide a
  *     - `string` -> all values encountered equal to this string will be null
@@ -207,7 +205,7 @@ export function readCSV(pathOrBody, options?) {
 export interface ScanCsvOptions {
   hasHeader: boolean;
   sep: string;
-  commentChar: string;
+  commentPrefix: string;
   quoteChar: string;
   skipRows: number;
   nullValues: string | Array<string> | Record<string, string>;
@@ -234,6 +232,7 @@ const scanCsvDefaultOptions: Partial<ScanCsvOptions> = {
   ignoreErrors: true,
   skipRows: 0,
   sep: ",",
+  eolChar: "\n",
   rechunk: false,
   encoding: "utf8",
   lowMemory: false,
@@ -252,7 +251,7 @@ const scanCsvDefaultOptions: Partial<ScanCsvOptions> = {
  * @param options.hasHeader - Indicate if first row of dataset is header or not. If set to False first row will be set to `column_x`,
  *     `x` being an enumeration over every column in the dataset.
  * @param options.sep -Character to use as delimiter in the file.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
  * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
  * @param options.skipRows -Start reading after `skipRows` position.
  * @param options.nullValues - Values to interpret as null values. You can provide a
@@ -396,16 +395,9 @@ export function scanJson(path: string, options?: Partial<ScanJsonOptions>) {
   return _LazyDataFrame(pli.scanJson(path, options));
 }
 
-interface ReadParquetOptions {
-  columns: string[] | number[];
-  numRows: number;
-  parallel: "auto" | "columns" | "row_groups" | "none";
-  rowCount: RowCount;
-}
-
 /**
    * Read into a DataFrame from a parquet file.
-   * @param pathOrBuffer
+   * @param pathOrBody
    * Path to a file, list of files, or a file like object. If the path is a directory, that directory will be used
    * as partition aware scan.
    * @param options.columns Columns to select. Accepts a list of column indices (starting at zero) or a list of column names.
@@ -456,7 +448,7 @@ export interface ReadAvroOptions {
 
 /**
  * Read into a DataFrame from an avro file.
- * @param pathOrBuffer
+ * @param pathOrBody
  * Path to a file, list of files, or a file like object. If the path is a directory, that directory will be used
  * as partition aware scan.
  * @param options.columns Columns to select. Accepts a list of column names.
@@ -505,7 +497,7 @@ export function readAvro(pathOrBody, options = {}) {
    @param options.rechunk - In case of reading multiple files via a glob pattern rechunk the final DataFrame into contiguous memory chunks.
    @param options.lowMemory - Reduce memory pressure at the expense of performance.
    @param options.cache - Cache the result after reading.
-   @param options.storageOptions - Options that indicate how to connect to a cloud provider.
+   @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
         If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
 
         The cloud providers currently supported are AWS, GCP, and Azure.
@@ -515,9 +507,9 @@ export function readAvro(pathOrBody, options = {}) {
         * `gcp <https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html>`_
         * `azure <https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html>`_
 
-        If `storage_options` is not provided, Polars will try to infer the information from environment variables.
-    @param retries - Number of retries if accessing a cloud instance fails.
-    @param includeFilePaths - Include the path of the source file(s) as a column with this name.
+        If `cloudOptions` is not provided, Polars will try to infer the information from environment variables.
+    @param options.retries - Number of retries if accessing a cloud instance fails.
+    @param options.includeFilePaths - Include the path of the source file(s) as a column with this name.
  */
 export function scanParquet(source: string, options: ScanParquetOptions = {}) {
   const defaultOptions = { parallel: "auto" };
@@ -639,7 +631,7 @@ export function scanIPC(path, options = {}) {
  * @param options.numThreads -Number of threads to use in csv parsing. Defaults to the number of physical cpu's of your system.
  * @param options.dtype -Overwrite the dtypes during inference.
  * @param options.lowMemory - Reduce memory usage in expense of performance.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
  * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
  * @param options.nullValues - Values to interpret as null values. You can provide a
  *     - `string` -> all values encountered equal to this string will be null

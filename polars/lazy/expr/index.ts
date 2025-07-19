@@ -2,7 +2,7 @@ import * as dt from "./datetime";
 import * as lst from "./list";
 import * as str from "./string";
 import * as struct from "./struct";
-export type { StringNamespace } from "./string";
+export type { ExprString as StringNamespace } from "./string";
 export type { ExprList as ListNamespace } from "./list";
 export type { ExprDateTime as DatetimeNamespace } from "./datetime";
 export type { ExprStruct as StructNamespace } from "./struct";
@@ -53,7 +53,7 @@ export interface Expr
   /**
    * String namespace
    */
-  get str(): str.StringNamespace;
+  get str(): str.ExprString;
   /**
    * List namespace
    */
@@ -257,8 +257,6 @@ export interface Expr
   argMin(): Expr;
   /**
    * Get the index values that would sort this column.
-   * @deprecated *since 0.16.0* @use descending
-   * @param reverse - Reverse/descending sort.
    * @param descending
    *     - false -> order from small to large.
    *     - true -> order from large to small.
@@ -471,6 +469,7 @@ export interface Expr
   /** Take the first n values.  */
   head(length?: number): Expr;
   head({ length }: { length: number }): Expr;
+  implode(): Expr;
   inner(): any;
   /** Interpolate intermediate values. The interpolation method is linear. */
   interpolate(): Expr;
@@ -738,8 +737,8 @@ export interface Expr
   quantile(quantile: number | Expr): Expr;
   /**
    * Assign ranks to data, dealing with ties appropriately.
-   * @param - method : {'average', 'min', 'max', 'dense', 'ordinal', 'random'}
-   * @param - descending - Rank in descending order.
+   * @param method : {'average', 'min', 'max', 'dense', 'ordinal', 'random'}
+   * @param descending - Rank in descending order.
    * */
   rank(method?: RankMethod, descending?: boolean): Expr;
   rank({ method, descending }: { method: string; descending: boolean }): Expr;
@@ -764,7 +763,6 @@ export interface Expr
                       Defaults to keeping the original value.
                       Accepts expression input. Non-expression inputs are parsed as literals.
    * @param returnDtype - The data type of the resulting expression. If set to `None` (default), the data type is determined automatically based on the other inputs.
-   * @see {@link str.replace}
    * @see {@link replace}
    * @example
    * Replace a single value by another value. Values that were not replaced remain unchanged.
@@ -905,8 +903,8 @@ export interface Expr
    * @param new_ - Value or sequence of values to replace by.
                   Accepts expression input. Sequences are parsed as Series, other non-expression inputs are parsed as literals.
                   Length must match the length of `old` or have length 1.
-   * @see {@link replace_strict}
-   * @see {@link str.replace}
+   * @see {@link replaceStrict}
+   * @see {@link replace}
    * @example
    * Replace a single value by another value. Values that were not replaced remain unchanged.
    * ```
@@ -1040,8 +1038,6 @@ export interface Expr
   }: { offset: number | Expr; length: number | Expr }): Expr;
   /**
    * Sort this column. In projection/ selection context the whole column is sorted.
-   * @deprecated *since 0.16.0* @use descending
-   * @param reverse - Reverse/descending sort.
    * @param descending
    * * false -> order from small to large.
    * * true -> order from large to small.
@@ -1064,8 +1060,6 @@ export interface Expr
       Parameters
       ----------
       @param by The column(s) used for sorting.
-      @deprecated *since 0.16.0* @use descending
-      @param reverse - Reverse/descending sort.
       @param descending
           false -> order from small to large.
           true -> order from large to small.
@@ -1088,7 +1082,6 @@ export interface Expr
   suffix(suffix: string): Expr;
   /**
    * Get sum value.
-   * @note
    * Dtypes in {Int8, UInt8, Int16, UInt16} are cast to Int64 before summing to prevent overflow issues.
    */
   sum(): Expr;
@@ -1135,8 +1128,8 @@ export interface Expr
    * Get the unique values of this expression;
    * @param maintainOrder Maintain order of data. This requires more work.
    */
-  unique(opt: { maintainOrder: boolean }): Expr;
   unique(maintainOrder?: boolean): Expr;
+  unique(opt: { maintainOrder: boolean }): Expr;
   /** Returns a unit Series with the highest value possible for the dtype of this expression. */
   upperBound(): Expr;
   /** Get variance. */
@@ -1144,7 +1137,7 @@ export interface Expr
   /** Alias for filter: @see {@link filter} */
   where(predicate: Expr): Expr;
 }
-
+/** @ignore */
 export const _Expr = (_expr: any): Expr => {
   const unwrap = (method: string, ...args: any[]) => {
     return _expr[method as any](...args);
@@ -1527,6 +1520,9 @@ export const _Expr = (_expr: any): Expr => {
       }
 
       return wrap("head", length.length);
+    },
+    implode() {
+      return _Expr(_expr.implode());
     },
     interpolate(method: InterpolationMethod = "linear") {
       return _Expr(_expr.interpolate(method));

@@ -1,6 +1,5 @@
 use crate::dataframe::JsDataFrame;
 use crate::prelude::*;
-use crate::utils::reinterpret;
 use polars_core::series::ops::NullBehavior;
 use polars_core::utils::CustomIterTools;
 
@@ -164,7 +163,8 @@ impl JsSeries {
         strict: Option<bool>,
     ) -> napi::Result<JsSeries> {
         let len = values.len();
-        let mut builder = PrimitiveChunkedBuilder::<Int64Type>::new(PlSmallStr::from_string(name), len);
+        let mut builder =
+            PrimitiveChunkedBuilder::<Int64Type>::new(PlSmallStr::from_string(name), len);
         for item in values.into_iter() {
             match item.get_type()? {
                 ValueType::Object => {
@@ -204,8 +204,13 @@ impl JsSeries {
     ) -> napi::Result<JsSeries> {
         let values = values.into_iter().map(|v| v.0).collect::<Vec<_>>();
 
-        let s = Series::from_any_values_and_dtype(PlSmallStr::from_string(name), &values, &dtype.0, strict)
-            .map_err(JsPolarsErr::from)?;
+        let s = Series::from_any_values_and_dtype(
+            PlSmallStr::from_string(name),
+            &values,
+            &dtype.0,
+            strict,
+        )
+        .map_err(JsPolarsErr::from)?;
 
         Ok(s.into())
     }
@@ -334,26 +339,17 @@ impl JsSeries {
     }
     #[napi(catch_unwind)]
     pub fn bitand(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitand(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series & &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
     pub fn bitor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitor(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series | &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
     pub fn bitxor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitxor(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series ^ &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
@@ -537,6 +533,7 @@ impl JsSeries {
                 nulls_last,
                 multithreaded,
                 maintain_order,
+                limit: None,
             })
             .into_series()
             .into()
@@ -802,11 +799,7 @@ impl JsSeries {
         }
     }
     #[napi(catch_unwind)]
-    pub fn quantile(
-        &self,
-        quantile: f64,
-        interpolation: Wrap<QuantileInterpolOptions>,
-    ) -> JsAnyValue {
+    pub fn quantile(&self, quantile: f64, interpolation: Wrap<QuantileMethod>) -> JsAnyValue {
         let binding = self
             .series
             .quantile_reduce(quantile, interpolation.0)
@@ -875,7 +868,11 @@ impl JsSeries {
     #[napi(catch_unwind)]
     pub fn struct_fields(&self) -> napi::Result<Vec<&str>> {
         let ca = self.series.struct_().map_err(JsPolarsErr::from)?;
-        Ok(ca.struct_fields().iter().map(|s| s.name().as_str()).collect())
+        Ok(ca
+            .struct_fields()
+            .iter()
+            .map(|s| s.name().as_str())
+            .collect())
     }
     // String Namespace
 
@@ -1215,6 +1212,10 @@ impl JsSeries {
 
     #[napi(catch_unwind)]
     pub fn reshape(&self, dims: Vec<i64>) -> napi::Result<JsSeries> {
+        let dims = dims
+            .into_iter()
+            .map(ReshapeDimension::new)
+            .collect::<Vec<_>>();
         let out = self.series.reshape_list(&dims).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
