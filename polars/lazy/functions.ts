@@ -640,7 +640,7 @@ export function quantile(column, q) {
  *
  * This is syntactic sugar for running `df.select` on an empty DataFrame.
  */
-export function select(expr: ExprOrString, ...exprs: ExprOrString[]) {
+export function select(expr: ExprOrString, ...exprs: ExprOrString[]): DataFrame<{}> {
   return DataFrame({}).select(expr, ...exprs);
 }
 

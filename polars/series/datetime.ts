@@ -1,4 +1,4 @@
-import { type Series, _Series } from ".";
+import { type Series, _Series } from "./index.ts";
 import type { DateFunctions } from "../shared_traits";
 
 /**
@@ -6,7 +6,7 @@ import type { DateFunctions } from "../shared_traits";
  */
 export interface SeriesDateFunctions extends DateFunctions<Series> {}
 
-export const SeriesDateFunctions = (_s): SeriesDateFunctions => {
+export const SeriesDateFunctions = (_s: any): SeriesDateFunctions => {
   const wrap = (method, ...args: any[]): Series => {
     return _Series(_s[method](...args)) as any;
   };

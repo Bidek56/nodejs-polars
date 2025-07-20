@@ -2,7 +2,7 @@ import { Field } from "./field";
 
 export abstract class DataType {
   declare readonly __dtype: string;
-  get variant() {
+  get variant(): DataTypeName {
     return this.constructor.name as DataTypeName;
   }
   protected identity = "DataType";
@@ -18,72 +18,71 @@ export abstract class DataType {
   }
 
   /** Null type */
-  public static get Null() {
+  public static get Null(): Null {
     return new Null();
   }
   /** `true` and `false`. */
-  public static get Bool() {
+  public static get Bool(): Bool {
     return new Bool();
   }
   /** An `i8` */
-  public static get Int8() {
+  public static get Int8(): Int8 {
     return new Int8();
   }
   /** An `i16` */
-  public static get Int16() {
+  public static get Int16(): Int16 {
     return new Int16();
   }
   /** An `i32` */
-  public static get Int32() {
+  public static get Int32(): Int32 {
     return new Int32();
   }
   /** An `i64` */
-  public static get Int64() {
+  public static get Int64(): Int64 {
     return new Int64();
   }
   /** An `u8` */
-  public static get UInt8() {
+  public static get UInt8(): UInt8 {
     return new UInt8();
   }
   /** An `u16` */
-  public static get UInt16() {
+  public static get UInt16(): UInt16 {
     return new UInt16();
   }
   /** An `u32` */
-  public static get UInt32() {
+  public static get UInt32(): UInt32 {
     return new UInt32();
   }
   /** An `u64` */
-  public static get UInt64() {
+  public static get UInt64(): UInt64 {
     return new UInt64();
   }
-
   /** A `f32` */
-  public static get Float32() {
+  public static get Float32(): Float32 {
     return new Float32();
   }
   /** A `f64` */
-  public static get Float64() {
+  public static get Float64(): Float64 {
     return new Float64();
   }
-  public static get Date() {
+  public static get Date(): Date {
     return new Date();
   }
   /** Time of day type */
-  public static get Time() {
+  public static get Time(): Time {
     return new Time();
   }
   /** Type for wrapping arbitrary JS objects */
-  public static get Object() {
+  public static get Object(): Object_ {
     return new Object_();
   }
   /** A categorical encoding of a set of strings  */
-  public static get Categorical() {
+  public static get Categorical(): Categorical {
     return new Categorical();
   }
 
   /** Decimal type */
-  public static Decimal(precision?: number, scale?: number) {
+  public static Decimal(precision?: number, scale?: number): Decimal {
     return new Decimal(precision, scale);
   }
   /**
@@ -94,7 +93,7 @@ export abstract class DataType {
   public static Datetime(
     timeUnit?: TimeUnit | "ms" | "ns" | "us",
     timeZone: string | null | undefined = null,
-  ) {
+  ): Datetime {
     return new Datetime(timeUnit ?? "ms", timeZone);
   }
 
@@ -104,7 +103,7 @@ export abstract class DataType {
    * @param inner The `DataType` of values within the list
    *
    */
-  public static List(inner: DataType) {
+  public static List(inner: DataType): List {
     return new List(inner);
   }
 
@@ -113,7 +112,7 @@ export abstract class DataType {
    * This is called `Array` in other polars implementations, but `Array` is widely used in JS, so we use `FixedSizeList` instead.
    *
    */
-  public static FixedSizeList(inner: DataType, listSize: number) {
+  public static FixedSizeList(inner: DataType, listSize: number): FixedSizeList {
     return new FixedSizeList(inner, listSize);
   }
   /**
@@ -121,26 +120,26 @@ export abstract class DataType {
    */
   public static Struct(fields: Field[]): DataType;
   public static Struct(fields: { [key: string]: DataType }): DataType;
-  public static Struct(fields: Field[] | { [key: string]: DataType }) {
+  public static Struct(fields: Field[] | { [key: string]: DataType }): Struct {
     return new Struct(fields);
   }
   /** A variable-length UTF-8 encoded string whose offsets are represented as `i64`. */
-  public static get Utf8() {
+  public static get Utf8(): Utf8 {
     return new Utf8();
   }
 
-  public static get String() {
+  public static get String(): String {
     return new String();
   }
 
-  toString() {
+  toString(): string {
     if (this.inner) {
       return `${this.identity}(${this.variant}(${this.inner}))`;
     }
     return `${this.identity}(${this.variant})`;
   }
 
-  toJSON() {
+  toJSON(): { [x: string]: { [x: string]: any; }; } | { [x: string]: DataTypeName; } {
     const inner = (this as any).inner;
     if (inner) {
       return {
@@ -153,10 +152,10 @@ export abstract class DataType {
       [this.identity]: this.variant,
     };
   }
-  [Symbol.for("nodejs.util.inspect.custom")]() {
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
     return this.toString();
   }
-  asFixedSizeList() {
+  asFixedSizeList(): (this & FixedSizeList) | null {
     if (this instanceof FixedSizeList) {
       return this;
     }
@@ -233,7 +232,7 @@ export class Decimal extends DataType {
     this.precision = precision ?? null;
     this.scale = scale ?? null;
   }
-  override get inner() {
+  override get inner(): [number|null, number|null] {
     return [this.precision, this.scale];
   }
   override equals(other: DataType): boolean {
@@ -246,7 +245,7 @@ export class Decimal extends DataType {
     return false;
   }
 
-  override toJSON() {
+  override toJSON(): { [x: string]: { [x: string]: any; }; } | { [x: string]: DataTypeName; } {
     return {
       [this.identity]: {
         [this.variant]: {
@@ -269,7 +268,7 @@ export class Datetime extends DataType {
   ) {
     super();
   }
-  override get inner() {
+  override get inner(): any[] {
     return [this.timeUnit, this.timeZone];
   }
 
@@ -289,7 +288,7 @@ export class List extends DataType {
   constructor(protected __inner: DataType) {
     super();
   }
-  override get inner() {
+  override get inner(): DataType[] {
     return [this.__inner];
   }
   override equals(other: DataType): boolean {
@@ -322,7 +321,7 @@ export class FixedSizeList extends DataType {
     }
     return false;
   }
-  override toJSON() {
+  override toJSON(): { [x: string]: { [x: string]: any; }; } | { [x: string]: DataTypeName; } {
     return {
       [this.identity]: {
         [this.variant]: {
@@ -352,7 +351,7 @@ export class Struct extends DataType {
       this.fields = Object.entries(inner).map(Field.from);
     }
   }
-  override get inner() {
+  override get inner(): Field[] {
     return this.fields;
   }
   override equals(other: DataType): boolean {
@@ -367,7 +366,7 @@ export class Struct extends DataType {
     }
     return false;
   }
-  override toJSON() {
+  override toJSON(): { [x: string]: { [x: string]: any; }; } | { [x: string]: DataTypeName; } {
     return {
       [this.identity]: {
         [this.variant]: this.fields,

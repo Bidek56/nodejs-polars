@@ -1,4 +1,4 @@
-import { DataFrame } from ".";
+import { DataFrame } from "./index.ts";
 import { LazyDataFrame } from "./lazy/dataframe";
 
 /**

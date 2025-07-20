@@ -13,23 +13,23 @@ export class Field implements Field {
     public name: string,
     public dtype: DataType,
   ) {}
-  toString() {
+  toString(): string {
     return `Field("${this.name}", ${this.dtype})`;
   }
-  toJSON() {
+  toJSON(): object {
     return {
       name: this.name,
       dtype: this.dtype,
     };
   }
-  [Symbol.for("nodejs.util.inspect.custom")]() {
+  [Symbol.for("nodejs.util.inspect.custom")](): object {
     return this.toJSON();
   }
 }
 
 export namespace Field {
   export function from(name: string, dtype: DataType): Field;
-  export function from([string, DataType]): Field;
+  export function from([string, DataType] : [ string, DataType ] ): Field;
   export function from(obj: { name: string; dtype: DataType }): Field;
   export function from(nameOrObj, dtype?: DataType): Field {
     if (typeof nameOrObj === "string" && dtype) {

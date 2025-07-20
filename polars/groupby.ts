@@ -263,7 +263,7 @@ export function RollingGroupBy(
   indexColumn: ColumnsOrExpr,
   period: string,
   offset?: string,
-  closed?,
+  closed?: string,
   by?: ColumnsOrExpr,
 ): RollingGroupBy {
   return {

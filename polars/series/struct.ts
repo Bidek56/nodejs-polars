@@ -1,4 +1,4 @@
-import { type Series, _Series } from ".";
+import { type Series, _Series } from "./index.ts";
 import { DataFrame, _DataFrame } from "../dataframe";
 import pli from "../internals/polars_internal";
 import { _Expr } from "../lazy/expr";

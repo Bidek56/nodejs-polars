@@ -1,5 +1,4 @@
-import { type Series, _Series } from ".";
-import { exprToLitOrExpr } from "..";
+import { type Series, _Series } from "./index.ts";
 import { col } from "../lazy/functions";
 import type { ListFunctions } from "../shared_traits";
 
@@ -10,7 +9,7 @@ import type { ListFunctions } from "../shared_traits";
  */
 export interface SeriesListFunctions extends ListFunctions<Series> {}
 
-export const SeriesListFunctions = (_s): SeriesListFunctions => {
+export const SeriesListFunctions = (_s: any): SeriesListFunctions => {
   const wrap = (method, ...args) => {
     const s = _Series(_s);
 

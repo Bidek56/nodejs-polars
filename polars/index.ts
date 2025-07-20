@@ -89,7 +89,7 @@ export namespace pl {
   export import tail = lazy.tail;
   export import list = lazy.list;
   export import when = lazy.when;
-  export const version = pli.version();
+  export const version: string = pli.version();
 
   export type Categorical = import("./datatypes").Categorical;
   export type Int8 = import("./datatypes").Int8;
@@ -232,7 +232,7 @@ export import spearmanRankCorr = lazy.spearmanRankCorr;
 export import tail = lazy.tail;
 export import list = lazy.list;
 export import when = lazy.when;
-export const version = pli.version();
+export const version: string = pli.version();
 
 export type Categorical = import("./datatypes").Categorical;
 export type Int8 = import("./datatypes").Int8;

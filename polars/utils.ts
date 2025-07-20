@@ -33,9 +33,7 @@ export type StartBy =
 export function columnOrColumns(
   columns: ColumnSelection | string | Array<string> | undefined,
 ): Array<string> | undefined {
-  if (columns) {
-    return columnOrColumnsStrict(columns);
-  }
+  return columns ? columnOrColumnsStrict(columns) : undefined;
 }
 /** @ignore */
 export function columnOrColumnsStrict(

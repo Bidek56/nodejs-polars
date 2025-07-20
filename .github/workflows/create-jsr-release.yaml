@@ -1,0 +1,18 @@
+# .github/workflows/create-jsr-release.yml
+
+name: publish-JSR
+
+on:
+  push:
+    tags:
+      - "nodejs-polars-v*" # Push events to matching nodejs-polars-v*, i.e. nodejs-polars-v1.0, nodejs-polars-v20.15.10
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # The OIDC ID token is used for authentication with JSR.
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx jsr publish

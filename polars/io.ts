@@ -511,7 +511,7 @@ export function readAvro(pathOrBody, options = {}) {
     @param options.retries - Number of retries if accessing a cloud instance fails.
     @param options.includeFilePaths - Include the path of the source file(s) as a column with this name.
  */
-export function scanParquet(source: string, options: ScanParquetOptions = {}) {
+export function scanParquet(source: string, options: ScanParquetOptions = {}): LazyDataFrame {
   const defaultOptions = { parallel: "auto" };
   const pliOptions = { ...defaultOptions, ...options };
   return _LazyDataFrame(pli.scanParquet(source, pliOptions));
