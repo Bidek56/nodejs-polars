@@ -3,7 +3,7 @@ import type { Expr } from "./../lazy/expr/index";
 import { col } from "../lazy/functions";
 import type { StringFunctions } from "../shared_traits";
 import { regexToString } from "../utils";
-import { _Series, type Series } from ".";
+import { _Series, type Series } from "./index";
 
 /**
  * String functions for Series

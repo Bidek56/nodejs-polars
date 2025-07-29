@@ -1,4 +1,4 @@
-import { _LazyDataFrame, DataFrame, type LazyDataFrame } from ".";
+import { _LazyDataFrame, DataFrame, type LazyDataFrame } from "./index";
 import pli from "./internals/polars_internal";
 
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");

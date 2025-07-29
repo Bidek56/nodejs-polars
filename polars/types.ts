@@ -1,4 +1,4 @@
-import { DataFrame } from ".";
+import { DataFrame } from "./index";
 import { LazyDataFrame } from "./lazy/dataframe";
 import type { ValueOrArray } from "./utils";
 

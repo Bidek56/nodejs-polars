@@ -1,0 +1,17 @@
+{
+  "name": "@polars/node",
+  "version": "0.19.0",
+  "exports": "./polars/index.ts",
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "./polars/**/*.ts",
+      "./polars/native-polars.js",
+      "./polars/nodejs-polars.*.node"
+    ],
+    "exclude": [
+      "./bin/"
+    ]
+  }
+}

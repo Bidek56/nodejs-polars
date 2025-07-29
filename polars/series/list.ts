@@ -1,6 +1,6 @@
 import { col } from "../lazy/functions";
 import type { ListFunctions } from "../shared_traits";
-import { _Series, type Series } from ".";
+import { _Series, type Series } from "./index";
 
 // export type ListNamespace = ListFunctions<Series>;
 
