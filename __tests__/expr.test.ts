@@ -634,6 +634,14 @@ describe("expr", () => {
     expected = pl.DataFrame({ log: [Math.LN2] });
     expect(actual).toFrameEqual(expected);
   });
+  test("DF-mapElements", () => {
+    const df = pl.DataFrame({ a: [1, 2, 3] });
+    const expected = pl.DataFrame({ aPlus1: [2, 3, 4] });
+    const actual = df.withColumn(
+      pl.col("a").mapElements((s) => s + 1).alias("aPlus1"),
+    );
+    expect(actual).toFrameEqual(expected);
+  });
   test("max", () => {
     const df = pl.DataFrame({ a: [1, 5, 3] });
     const expected = pl.DataFrame({ max: [5] });

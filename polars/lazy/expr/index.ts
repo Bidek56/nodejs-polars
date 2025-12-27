@@ -667,6 +667,12 @@ export interface Expr
   lowerBound(): Expr;
   peakMax(): Expr;
   peakMin(): Expr;
+  /**
+   * Apply a custom function to the DataFrame in an expression context.
+   * @param fn - Function that takes a DataFrame and returns a DataFrame.
+   * @param options - Optional options for the mapping.
+   */
+  mapElements(fn: (df: any) => any, options?: Record<string, any>): Expr;
   /** Compute the max value of the arrays in the list */
   max(): Expr;
   /** Compute the mean value of the arrays in the list */
@@ -1216,7 +1222,6 @@ export const _Expr = (_expr: any): Expr => {
 
       return wrap(method, callOpts);
     };
-
   return {
     _expr,
     [Symbol.toStringTag]() {
@@ -1253,6 +1258,9 @@ export const _Expr = (_expr: any): Expr => {
     },
     get struct() {
       return struct.ExprStructFunctions(_expr);
+    },
+    mapElements(fn: (df: any) => any, options?: Record<string, any>): Expr {
+      return _Expr(_expr.mapElements(fn, options));
     },
     abs() {
       return _Expr(_expr.abs());
