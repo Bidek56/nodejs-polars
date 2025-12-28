@@ -2,6 +2,7 @@ use crate::conversion::Wrap;
 use crate::prelude::*;
 use crate::series::JsSeries;
 use crate::utils::reinterpret;
+use polars::prelude::udf::try_infer_udf_output_dtype;
 use polars::{prelude::*, sql::FunctionOptions};
 use polars::lazy::dsl;
 use polars::lazy::dsl::Expr;
@@ -16,6 +17,21 @@ use napi::{
     bindgen_prelude::*,
     threadsafe_function::ThreadsafeFunction,
 };
+
+pub static mut GLOBAL_JS_UDF: Option<
+    fn(s: &[Column], output_dtype: Option<DataType>, lambda: &Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>) -> PolarsResult<Column>,
+> = None;
+
+fn call_js_udf_stub(
+    _s: &[Column],
+    _output_dtype: Option<DataType>,
+    _lambda: &Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>,
+) -> PolarsResult<Column> {
+    // For now, return a single float scalar column as a placeholder so that
+    // dtype inference does not panic. Full execution requires async
+    // round-trip to JS and is out of scope for this change.
+    Ok(Column::new_scalar("name".into(), 3.into(), 3))
+}
 
 #[napi]
 #[repr(transparent)]
@@ -61,7 +77,6 @@ fn bin_config() -> bincode::config::Configuration {
 }
 
 pub struct JsUdfExpression {
-    // js_function: ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>,
     js_function: Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>,
     output_type: Option<DataTypeExpr>,
     materialized_field: OnceLock<Field>,
@@ -69,37 +84,32 @@ pub struct JsUdfExpression {
     returns_scalar: bool,
 }
 
-/// Holds the JavaScript callback and the N‑API environment.
-// pub struct JsAnonUdf {
-//     env: Env,
-//     /// The JS function: (Wrap<AnyValue>) -> Wrap<AnyValue>
-//     js_fn: ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>,
-// }
-
 impl ColumnsUdf for JsUdfExpression {
-    fn call_udf(&self, _s: &mut [Column]) -> PolarsResult<Column> {
-        // let func = unsafe { CALL_COLUMNS_UDF_PYTHON.unwrap() };
-        // let func = self.js_function;
-        // let ff = self.js_function;
-    
-        // let _field = self
-        //     .materialized_field
-        //     .get()
-        //     .expect("should have been materialized at this point");
+    fn call_udf(&self, s: &mut [Column]) -> PolarsResult<Column> {    
+        let field = self
+            .materialized_field
+            .get()
+            .expect("should have been materialized at this point");
         // Calling the ThreadsafeFunction requires a different signature; skip calling here
         // and proceed to construct the output column below.
+        let func = unsafe {
+            GLOBAL_JS_UDF.expect("CALL_COLUMNS_UDF_PYTHON must be set to call JS UDFs")
+        };
+        let mut out = func(
+            s,
+            self.materialized_field.get().map(|f| f.dtype.clone()),
+            &self.js_function,
+        )?;
 
-        // let must_cast = out.dtype().matches_schema_type(field.dtype()).map_err(|_| {
-        //     polars_err!(
-        //         SchemaMismatch: "expected output type '{:?}', got '{:?}'; set `return_dtype` to the proper datatype",
-        //         field.dtype(), out.dtype(),
-        //     )
-        // })?;
-        // if must_cast {
-        //     out = out.cast(field.dtype())?;
-        // }
-
-        let out = Column::new_scalar("name".into(), 3.into(),3);
+        let must_cast = out.dtype().matches_schema_type(field.dtype()).map_err(|_| {
+            polars_err!(
+                SchemaMismatch: "expected output type '{:?}', got '{:?}'; set `return_dtype` to the proper datatype",
+                field.dtype(), out.dtype(),
+            )
+        })?;
+        if must_cast {
+            out = out.cast(field.dtype())?;
+        }
         Ok(out)
     }
     
@@ -107,15 +117,6 @@ impl ColumnsUdf for JsUdfExpression {
         std::unimplemented!("as_any not implemented for this 'opaque' function")
     }
 }
-
-// impl JsAnonUdf {
-//     pub fn new(
-//         env: Env,
-//         js_fn: ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>,
-//     ) -> Self {
-//         Self { env, js_fn }
-//     }
-// }
 
 /* ---------- Implement the Polars trait (0.52) ---------- */
 impl AnonymousColumnsUdf for JsUdfExpression {
@@ -158,29 +159,32 @@ impl AnonymousColumnsUdf for JsUdfExpression {
     //     Ok(())
     // }
 
-    fn get_field(&self, _input_schema: &Schema, _fields: &[Field]) -> PolarsResult<Field> {
-        // let field = match self.materialized_field.get() {
-        //     Some(f) => f.clone(),
-        //     None => {
-        //         let dtype = match self.output_type.as_ref() {
-        //             None => {
-        //                 let func = unsafe { CALL_COLUMNS_UDF_PYTHON.unwrap() };
-        //                 let f = |s: &[Column]| func(s, None, &self.python_function);
-        //                 try_infer_udf_output_dtype(&f as _, fields)?
-        //             },
-        //             Some(output_type) => output_type
-        //                 .clone()
-        //                 .into_datatype_with_self(input_schema, fields[0].dtype())?,
-        //         };
+    fn get_field(&self, input_schema: &Schema, fields: &[Field]) -> PolarsResult<Field> {
+        let field = match self.materialized_field.get() {
+            Some(f) => f.clone(),
+            None => {
+                let dtype = match self.output_type.as_ref() {
+                    None => {
+                        // Use the global function pointer that knows how to call into the JS UDF.
+                        let func = unsafe {
+                            GLOBAL_JS_UDF.expect("CALL_COLUMNS_UDF_PYTHON must be set to call JS UDFs")
+                        };
+                        let f = move |s: &[Column]| -> PolarsResult<Column> { func(s, None, &self.js_function) };
+                        try_infer_udf_output_dtype(&f, fields)?
+                    },
+                    Some(output_type) => output_type
+                        .clone()
+                        .into_datatype_with_self(input_schema, fields[0].dtype())?,
+                };
 
-        //         // Take the name of first field, just like `map_field`.
-        //         let name = fields[0].name();
-        //         let f = Field::new(name.clone(), dtype);
-        //         self.materialized_field.get_or_init(|| f.clone());
-        //         f
-        //     },
-        // };
-        Ok(Field::new("name".into(), DataType::Float32))
+                // Take the name of first field, just like `map_field`.
+                let name = fields[0].name();
+                let f = Field::new(name.clone(), dtype);
+                self.materialized_field.get_or_init(|| f.clone());
+                f
+            },
+        };
+        Ok(field)
     }
 }
 
@@ -349,8 +353,20 @@ impl JsExpr {
         // The adaptor is put inside an `Arc` because Polars expects a shared pointer.
         // let udf: Arc<dyn AnonymousColumnsUdf> = Arc::new(JsAnonUdf::new(env, js_fn));
 
+        // Wrap the threadsafe function in an Arc so we can both store it on the
+        // UDF expression and keep a global reference for the caller stub.
+        let arc_fn = Arc::new(js_fn);
+
+        // Set the global pointer and the caller function. The caller is a
+        // simple stub that returns a placeholder column; full synchronous
+        // execution through the ThreadsafeFunction is more involved and would
+        // require a roundtrip protocol between Rust and JS.
+        unsafe {
+            GLOBAL_JS_UDF = Some(call_js_udf_stub);
+        }
+
         let udf = Arc::new(JsUdfExpression {
-            js_function: Arc::new(js_fn),
+            js_function: arc_fn,
             output_type: None,
             materialized_field: OnceLock::new(),
             is_elementwise: false,
@@ -365,15 +381,6 @@ impl JsExpr {
             ..Default::default()
         };
 
-        // println!("#########");
-        // println!("#########");
-        // println!("#########");
-        // println!("#########");
-        // println!("conv val: {:?}", udf.call_udf(s));
-        // println!("#########");
-        // println!("#########");
-
-
         // Construct the expression.
         Expr::AnonymousFunction {
             function: polars::lazy::prelude::LazySerde::Deserialized(SpecialEq::new(udf)),
@@ -382,28 +389,6 @@ impl JsExpr {
             fmt_str: Box::new(PlSmallStr::EMPTY),
         }.into()
     }
-
-    /*
-    pub fn map_elements(&self, lambda: Function<Wrap<AnyValue>, Wrap<AnyValue>>) -> JsExpr {
-        // let out: Vec<AnyValue> = self.series.iter().map(|av| {
-        //     let wrapped_in = Wrap(av);
-        //     lambda.call(wrapped_in).map(|w| w.0)
-        // }).collect::<Result<_, _>>().unwrap();
-        // let ss = Series::new(self.series.name().clone(), out);
-        // JsSeries::new(ss)
-
-        let ex = Expr::AnonymousFunction {
-            input: [self.clone().inner].to_vec(),
-            function: new_column_udf(lambda),
-            options: FunctionOptions {
-                flags,
-                ..Default::default()
-            },
-            fmt_str: Box::new(PlSmallStr::from(NAME)),
-        };
-
-        self.clone().inner.min().into()
-    } */
 
     #[napi(catch_unwind)]
     pub fn min(&self) -> JsExpr {
