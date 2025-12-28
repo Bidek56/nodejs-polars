@@ -18,10 +18,6 @@ use napi::{
     threadsafe_function::ThreadsafeFunction,
 };
 
-pub static mut GLOBAL_JS_UDF: Option<
-    fn(s: &[Column], output_dtype: Option<DataType>, lambda: &Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>) -> PolarsResult<Column>,
-> = None;
-
 fn call_js_udf_stub(
     _s: &[Column],
     _output_dtype: Option<DataType>,
@@ -92,10 +88,7 @@ impl ColumnsUdf for JsUdfExpression {
             .expect("should have been materialized at this point");
         // Calling the ThreadsafeFunction requires a different signature; skip calling here
         // and proceed to construct the output column below.
-        let func = unsafe {
-            GLOBAL_JS_UDF.expect("CALL_COLUMNS_UDF_PYTHON must be set to call JS UDFs")
-        };
-        let mut out = func(
+        let mut out = call_js_udf_stub(
             s,
             self.materialized_field.get().map(|f| f.dtype.clone()),
             &self.js_function,
@@ -118,46 +111,20 @@ impl ColumnsUdf for JsUdfExpression {
     }
 }
 
-/* ---------- Implement the Polars trait (0.52) ---------- */
 impl AnonymousColumnsUdf for JsUdfExpression {
     fn as_column_udf(self: Arc<Self>) -> Arc<dyn ColumnsUdf> {
         self as _
     }
 
     fn deep_clone(self: Arc<Self>) -> Arc<dyn AnonymousColumnsUdf> {
-        // Arc::new(vec![1, 4])
-
         Arc::new(Self {
             js_function: Arc::clone(&self.js_function),
             output_type: self.output_type.clone(),
             materialized_field: OnceLock::new(),
             is_elementwise: self.is_elementwise,
             returns_scalar: self.returns_scalar,
-            // env: todo!(),
-            // js_fn: todo!(),
         }) as _
     }
-
-    // fn try_serialize(&self, buf: &mut Vec<u8>) -> PolarsResult<()> {
-    //     use polars_utils::pl_serialize;
-
-    //     // Write byte marks
-    //     buf.extend_from_slice(PYTHON_SERDE_MAGIC_BYTE_MARK);
-
-    //     // Write UDF metadata
-    //     pl_serialize::serialize_into_writer::<_, _, true>(
-    //         &mut *buf,
-    //         &(
-    //             self.output_type.clone(),
-    //             self.materialized_field.get().cloned(),
-    //             self.is_elementwise,
-    //             self.returns_scalar,
-    //         ),
-    //     )?;
-
-    //     pl_serialize::python_object_serialize(&self.python_function, buf)?;
-    //     Ok(())
-    // }
 
     fn get_field(&self, input_schema: &Schema, fields: &[Field]) -> PolarsResult<Field> {
         let field = match self.materialized_field.get() {
@@ -166,10 +133,7 @@ impl AnonymousColumnsUdf for JsUdfExpression {
                 let dtype = match self.output_type.as_ref() {
                     None => {
                         // Use the global function pointer that knows how to call into the JS UDF.
-                        let func = unsafe {
-                            GLOBAL_JS_UDF.expect("CALL_COLUMNS_UDF_PYTHON must be set to call JS UDFs")
-                        };
-                        let f = move |s: &[Column]| -> PolarsResult<Column> { func(s, None, &self.js_function) };
+                        let f = move |s: &[Column]| -> PolarsResult<Column> { call_js_udf_stub(s, None, &self.js_function) };
                         try_infer_udf_output_dtype(&f, fields)?
                     },
                     Some(output_type) => output_type
@@ -350,21 +314,9 @@ impl JsExpr {
         js_fn: ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>,
         _options: Option<Object>,
     ) -> JsExpr {
-        // The adaptor is put inside an `Arc` because Polars expects a shared pointer.
-        // let udf: Arc<dyn AnonymousColumnsUdf> = Arc::new(JsAnonUdf::new(env, js_fn));
-
         // Wrap the threadsafe function in an Arc so we can both store it on the
         // UDF expression and keep a global reference for the caller stub.
         let arc_fn = Arc::new(js_fn);
-
-        // Set the global pointer and the caller function. The caller is a
-        // simple stub that returns a placeholder column; full synchronous
-        // execution through the ThreadsafeFunction is more involved and would
-        // require a roundtrip protocol between Rust and JS.
-        unsafe {
-            GLOBAL_JS_UDF = Some(call_js_udf_stub);
-        }
-
         let udf = Arc::new(JsUdfExpression {
             js_function: arc_fn,
             output_type: None,
