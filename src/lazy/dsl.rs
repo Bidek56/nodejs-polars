@@ -17,8 +17,81 @@ use napi::{
     bindgen_prelude::*,
     threadsafe_function::ThreadsafeFunction,
 };
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use std::sync::Arc;
 
-fn call_js_udf_stub(
+fn call_js_udf(
+    s: &[Column],
+    _output_dtype: Option<DataType>,
+    lambda: &Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>,
+) -> PolarsResult<Column> {
+
+    // let vec = Arc::new(Mutex::new(Vec::<AnyValue>::new()));
+    let vec = Vec::<AnyValue>::new();
+
+    for col in s {
+        let series = col.as_materialized_series();
+        // Call the JS threadsafe function for every value in the series by
+        // converting it to an owned AnyValue<'static> and wrapping it.
+        series.iter().for_each(|v| {
+            // Convert AnyValue to an owned AnyValue<'static>
+            let owned_value = v.into_static();
+            let js_value = Ok(Wrap(owned_value));
+            // Print the value we send to JS
+            println!("#########");
+            println!("JS val: {:?}", js_value.as_ref().unwrap().0);
+            println!("#########");
+
+            // Clone the arc so the callback can own a reference and be 'static.
+            // let vec_clone = Arc::clone(&vec);
+            let mut vec_clone = vec.clone();
+            let js_fn = Arc::clone(lambda);
+
+            // Use Blocking mode so we handle the JS return synchronously and avoid
+            // needing non-'static borrows in the callback.
+            let res = js_fn.call_with_return_value(
+                js_value,
+                ThreadsafeFunctionCallMode::Blocking,
+                move |ret, _env| {
+                    println!("$$$$$$$");
+                    println!("$$$$$$$");
+                    println!("$$$$$$$");
+                    match ret {
+                        Ok(wrap) => {
+                            let returned = wrap.0;
+                            // push into the shared Vec inside a Mutex
+                            // let mut guard = vec_clone.lock().unwrap();
+                            // guard.push(returned.clone());
+                            vec_clone.push(returned.clone());
+                            println!("returned: {:?}", returned);
+                        }
+                        Err(e) => {
+                            println!("JS callback returned error: {:?}", e);
+                        }
+                    }
+                    Ok(())
+                },
+            );
+            println!("Status calling JS UDF: {:?}", res);
+            println!("^^^^^^^^^^");
+            println!("Vec: {:?}", vec_clone.clone());
+            println!("^^^^^^^^^^");
+
+        });
+    };
+
+    // Use the collected values so the variable is used and accessible here.
+    // let collected_count = vec.lock().unwrap().len();
+    // println!("Collected {} values from JS UDF", collected_count);
+
+    let out = Column::new("rain".into(), vec);
+    Ok(out)
+
+    // Ok(Column::new_scalar("name".into(), 3.into(), 3)) 
+}
+
+/*
+fn _call_js_udf_stub(
     _s: &[Column],
     _output_dtype: Option<DataType>,
     _lambda: &Arc<ThreadsafeFunction<Wrap<AnyValue<'static>>, Wrap<AnyValue<'static>>>>,
@@ -27,7 +100,7 @@ fn call_js_udf_stub(
     // dtype inference does not panic. Full execution requires async
     // round-trip to JS and is out of scope for this change.
     Ok(Column::new_scalar("name".into(), 3.into(), 3))
-}
+} */
 
 #[napi]
 #[repr(transparent)]
@@ -88,7 +161,7 @@ impl ColumnsUdf for JsUdfExpression {
             .expect("should have been materialized at this point");
         // Calling the ThreadsafeFunction requires a different signature; skip calling here
         // and proceed to construct the output column below.
-        let mut out = call_js_udf_stub(
+        let mut out = call_js_udf(
             s,
             self.materialized_field.get().map(|f| f.dtype.clone()),
             &self.js_function,
@@ -133,7 +206,9 @@ impl AnonymousColumnsUdf for JsUdfExpression {
                 let dtype = match self.output_type.as_ref() {
                     None => {
                         // Use the global function pointer that knows how to call into the JS UDF.
-                        let f = move |s: &[Column]| -> PolarsResult<Column> { call_js_udf_stub(s, None, &self.js_function) };
+                        // Clone the Arc so the closure owns it and can be `'static`.
+                        let js_fn = Arc::clone(&self.js_function);
+                        let f = move |s: &[Column]| -> PolarsResult<Column> { call_js_udf(s, None, &js_fn) };
                         try_infer_udf_output_dtype(&f, fields)?
                     },
                     Some(output_type) => output_type
@@ -742,7 +817,6 @@ impl JsExpr {
     pub fn repeat_by(&self, by: &JsExpr) -> JsExpr {
         self.clone().inner.repeat_by(by.inner.clone()).into()
     }
-
     #[napi(catch_unwind)]
     pub fn pow(&self, exponent: f64) -> JsExpr {
         self.clone().inner.pow(exponent).into()
@@ -1717,6 +1791,7 @@ impl JsExpr {
     pub fn sub(&self, rhs: &JsExpr) -> JsExpr {
         dsl::binary_expr(self.inner.clone(), Operator::Minus, rhs.inner.clone()).into()
     }
+
     #[napi(catch_unwind)]
     pub fn mul(&self, rhs: &JsExpr) -> JsExpr {
         dsl::binary_expr(self.inner.clone(), Operator::Multiply, rhs.inner.clone()).into()
