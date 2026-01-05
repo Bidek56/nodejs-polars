@@ -7,6 +7,12 @@ env:
   push:
     branches:
       - gha-release
+    paths-ignore:
+      - '**/*.md'
+      - LICENSE
+      - '**/*.gitignore'
+      - .editorconfig
+      - docs/**
 permissions:
   id-token: write  # Required for OIDC
   contents: read
@@ -17,43 +23,43 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            architecture: x64
-            build: |
-              rustup target add x86_64-apple-darwin
-              yarn build --target x86_64-apple-darwin
-              strip -x polars/*.node
-          - host: windows-latest
-            architecture: x64
-            build: yarn build
-            target: x86_64-pc-windows-msvc
-          - host: ubuntu-latest
-            architecture: x64
-            target: x86_64-unknown-linux-gnu
-            build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross && llvm-strip -x polars/*.node
-          - host: ubuntu-latest
-            architecture: x64
-            target: x86_64-unknown-linux-musl
-            build: yarn build --target x86_64-unknown-linux-musl --use-napi-cross
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            architecture: arm64
-            build: yarn build --target aarch64-apple-darwin && strip -x polars/*.node
-          - host: ubuntu-latest
-            architecture: x64
-            target: aarch64-unknown-linux-gnu
-            build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross && llvm-strip -x polars/*.node
-          - host: ubuntu-latest
-            architecture: x64
-            target: aarch64-linux-android
-            build: |
-              export CLANG_VERSION=`ls ${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang | sed 's/ *$//g'`
-              touch "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
-              chmod 777 "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
-              echo "INPUT(-lunwind)" > "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
-              yarn build --target aarch64-linux-android
-              ${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip polars/*.node
+          # - host: macos-latest
+          #   target: x86_64-apple-darwin
+          #   architecture: x64
+          #   build: |
+          #     rustup target add x86_64-apple-darwin
+          #     yarn build --target x86_64-apple-darwin
+          #     strip -x polars/*.node
+          # - host: windows-latest
+          #   architecture: x64
+          #   build: yarn build
+          #   target: x86_64-pc-windows-msvc
+          # - host: ubuntu-latest
+          #   architecture: x64
+          #   target: x86_64-unknown-linux-gnu
+          #   build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross && llvm-strip -x polars/*.node
+          # - host: ubuntu-latest
+          #   architecture: x64
+          #   target: x86_64-unknown-linux-musl
+          #   build: yarn build --target x86_64-unknown-linux-musl --use-napi-cross
+          # - host: macos-latest
+          #   target: aarch64-apple-darwin
+          #   architecture: arm64
+          #   build: yarn build --target aarch64-apple-darwin && strip -x polars/*.node
+          # - host: ubuntu-latest
+          #   architecture: x64
+          #   target: aarch64-unknown-linux-gnu
+          #   build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross && llvm-strip -x polars/*.node
+          # - host: ubuntu-latest
+          #   architecture: x64
+          #   target: aarch64-linux-android
+          #   build: |
+          #     export CLANG_VERSION=`ls ${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang | sed 's/ *$//g'`
+          #     touch "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
+          #     chmod 777 "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
+          #     echo "INPUT(-lunwind)" > "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
+          #     yarn build --target aarch64-linux-android
+          #     ${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip polars/*.node
 
           - host: ubuntu-latest
             architecture: x64
@@ -71,14 +77,11 @@ jobs:
           node-version: 24
           check-latest: true
           cache: yarn
-      - name: Copy rust-toolchain to root
-        run: cp rust-toolchain ..
       - name: Install
-        uses: actions-rs/toolchain@v1
-        if: ${{ !matrix.settings.docker }}
+        uses: dtolnay/rust-toolchain@stable
         with:
-          override: true
-          target: ${{ matrix.settings.target }}
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
       - name: Cache cargo
         uses: actions/cache@v5
         with:
