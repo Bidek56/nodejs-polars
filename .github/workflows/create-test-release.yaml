@@ -76,10 +76,10 @@ jobs:
           cache: yarn
       - name: Install
         uses: dtolnay/rust-toolchain@stable
+        run: rustup target add ${{ matrix.settings.target }}
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
-        run: rustup target add ${{ matrix.settings.target }}
       - name: Cache cargo
         uses: actions/cache@v5
         with:
