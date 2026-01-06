@@ -2,7 +2,7 @@ name: test-release-build
 env:
   DEBUG: napi:*
   APP_NAME: nodejs-polars
-  MACOSX_DEPLOYMENT_TARGET: "15.0"
+  MACOSX_DEPLOYMENT_TARGET: "26.0"
 "on":
   push:
     branches:
@@ -24,6 +24,7 @@ jobs:
       matrix:
         settings:
           - host: macos-latest
+            # Based on https://github.com/KyleMayes/install-llvm-action/blob/master/assets.json
             llvm_version: '20'
             target: x86_64-apple-darwin
             build: yarn build --target x86_64-apple-darwin
@@ -109,7 +110,7 @@ jobs:
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
-          version: ${{ matrix.llvm_version }}
+          version: ${{ matrix.settings.llvm_version }}
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
