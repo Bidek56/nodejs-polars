@@ -115,7 +115,7 @@ jobs:
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
-          version: "10.0.0"
+          version: "12.0.0"
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
@@ -123,8 +123,10 @@ jobs:
         # Use the LLVM_PATH environment variable set by the install action
         run: ${{ env.LLVM_PATH }}/bin/llvm-strip -x polars/*.node
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bindings-${{ matrix.settings.target }}
           path: polars/*.node
+          retention-days: 1
+          overwrite: true
           if-no-files-found: error
