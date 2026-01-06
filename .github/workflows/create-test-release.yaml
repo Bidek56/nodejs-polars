@@ -64,7 +64,7 @@ jobs:
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
             # Use the LLVM_PATH environment variable set by the install action
-            build: yarn build --target aarch64-unknown-linux-musl -x && ${{ env.LLVM_PATH }}/bin/llvm-strip -x polars/*.node
+            build: yarn build --target aarch64-unknown-linux-musl -x
 
     name: ${{ matrix.settings.target }} - node@24
     runs-on: ${{ matrix.settings.host }}
@@ -118,8 +118,10 @@ jobs:
           version: "10.0.0"
       - name: Build
         run: ${{ matrix.settings.build }}
-        if: ${{ !matrix.settings.docker }}
         shell: bash
+      - name: Strip the artifact
+        # Use the LLVM_PATH environment variable set by the install action
+        run: ${{ env.LLVM_PATH }}/bin/llvm-strip -x polars/*.node
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
