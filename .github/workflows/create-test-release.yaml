@@ -64,7 +64,7 @@ jobs:
           - host: ubuntu-latest
             architecture: x64
             target: aarch64-unknown-linux-musl
-            build: yarn build --target aarch64-unknown-linux-musl --use-napi-cross && llvm-strip -x polars/*.node
+            build: yarn build --target aarch64-unknown-linux-musl -x && llvm-strip -x polars/*.node
 
     name: ${{ matrix.settings.target }} - node@24
     runs-on: ${{ matrix.settings.host }}
@@ -103,13 +103,6 @@ jobs:
         shell: bash
       - name: Install dependencies
         run: yarn install
-      - name: Build in docker
-        uses: addnab/docker-run-action@v3
-        if: ${{ matrix.settings.docker }}
-        with:
-          image: ${{ matrix.settings.docker }}
-          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index -v ${{ github.workspace }}:/build -w /build"
-          run: ${{ matrix.settings.build }}
       - name: Build
         run: ${{ matrix.settings.build }}
         if: ${{ !matrix.settings.docker }}
