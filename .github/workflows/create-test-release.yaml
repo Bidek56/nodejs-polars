@@ -63,7 +63,8 @@ jobs:
 
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            build: yarn build --target aarch64-unknown-linux-musl -x && llvm-strip -x polars/*.node
+            # Use the LLVM_PATH environment variable set by the install action
+            build: yarn build --target aarch64-unknown-linux-musl -x && ${{ env.LLVM_PATH }}/bin/llvm-strip -x polars/*.node
 
     name: ${{ matrix.settings.target }} - node@24
     runs-on: ${{ matrix.settings.host }}
