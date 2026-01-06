@@ -104,8 +104,7 @@ jobs:
         run: ${{ matrix.settings.build }}
         shell: bash
       - name: Strip the artifact
-        # Use the LLVM_PATH environment variable set by the install action
-        run: ${{ env.LLVM_PATH }}/bin/llvm-strip -x polars/*.node
+        run: llvm-strip -x polars/*.node
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
