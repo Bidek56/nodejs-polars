@@ -23,33 +23,33 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          # - host: macos-latest
-          #   target: x86_64-apple-darwin
-          #   build: yarn build --target x86_64-apple-darwin
-          # - host: macos-latest
-          #   architecture: arm64
-          #   target: aarch64-apple-darwin
-          #   build: yarn build --target aarch64-apple-darwin
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            build: yarn build --target x86_64-apple-darwin
+          - host: macos-latest
+            architecture: arm64
+            target: aarch64-apple-darwin
+            build: yarn build --target aarch64-apple-darwin
           - host: windows-latest
             architecture: x64
             target: x86_64-pc-windows-msvc
             build: yarn build --target x86_64-pc-windows-msvc
-          # - host: ubuntu-latest
-          #   target: x86_64-unknown-linux-gnu
-          #   build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
-          # - host: ubuntu-latest
-          #   architecture: x64
-          #   target: x86_64-unknown-linux-musl
-          #   build: yarn build --target x86_64-unknown-linux-musl -x
-          # - host: ubuntu-latest
-          #   target: aarch64-unknown-linux-gnu
-          #   build: yarn build --target aarch64-unknown-linux-gnu -x
-          # - host: ubuntu-latest
-          #   target: aarch64-linux-android
-          #   build: yarn build --target aarch64-linux-android
-          # - host: ubuntu-latest
-          #   target: aarch64-unknown-linux-musl
-          #   build: yarn build --target aarch64-unknown-linux-musl -x
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
+          - host: ubuntu-latest
+            architecture: x64
+            target: x86_64-unknown-linux-musl
+            build: yarn build --target x86_64-unknown-linux-musl -x
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build: yarn build --target aarch64-unknown-linux-gnu -x
+          - host: ubuntu-latest
+            target: aarch64-linux-android
+            build: yarn build --target aarch64-linux-android
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            build: yarn build --target aarch64-unknown-linux-musl -x
     name: ${{ matrix.settings.target }} - node@25
     runs-on: ${{ matrix.settings.host }}
     steps:
@@ -89,7 +89,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .yarn/cache
-          key: npm-cache-build-${{ matrix.settings.target }}-node@24
+          key: npm-cache-build-${{ matrix.settings.target }}-node@25
       - name: Setup toolchain
         run: ${{ matrix.settings.setup }}
         if: ${{ matrix.settings.setup }}
