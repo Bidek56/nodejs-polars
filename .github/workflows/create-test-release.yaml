@@ -37,10 +37,11 @@ jobs:
           #   target: x86_64-unknown-linux-gnu
           #   build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
+            architecture: x64
             target: x86_64-unknown-linux-musl
             build: yarn build --target x86_64-unknown-linux-musl --use-napi-cross
           - host: ubuntu-latest
-            architecture: arm64
+            architecture: x64
             target: aarch64-unknown-linux-gnu
             build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross
           # - host: ubuntu-latest
