@@ -34,32 +34,28 @@ jobs:
           #   build: yarn build --target aarch64-apple-darwin
           - host: windows-latest
             llvm_version: '20'
-            architecture: x64
             target: x86_64-pc-windows-msvc
             build: yarn build --target x86_64-pc-windows-msvc
           - host: ubuntu-latest
             llvm_version: '20'
-            architecture: x64
             target: x86_64-unknown-linux-gnu
             build: yarn build --target x86_64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
             llvm_version: '20'
-            architecture: x64
             target: x86_64-unknown-linux-musl
             build: yarn build --target x86_64-unknown-linux-musl --use-napi-cross
           - host: ubuntu-latest
             llvm_version: '20'
-            architecture: x64
             target: aarch64-unknown-linux-gnu
             build: yarn build --target aarch64-unknown-linux-gnu --use-napi-cross
-          - host: ubuntu-latest
-            llvm_version: '20'
-            target: aarch64-linux-android
-            build: yarn build --target aarch64-linux-android
-          - host: ubuntu-latest
-            llvm_version: '20' 
-            target: aarch64-unknown-linux-musl
-            build: yarn build --target aarch64-unknown-linux-musl -x
+          # - host: ubuntu-latest
+          #   llvm_version: '20'
+          #   target: aarch64-linux-android
+          #   build: yarn build --target aarch64-linux-android
+          # - host: ubuntu-latest
+          #   llvm_version: '20' 
+          #   target: aarch64-unknown-linux-musl
+          #   build: yarn build --target aarch64-unknown-linux-musl -x
     name: ${{ matrix.settings.target }} - node@24
     runs-on: ${{ matrix.settings.host }}
     steps:
