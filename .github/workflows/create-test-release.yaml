@@ -111,6 +111,8 @@ jobs:
         shell: bash
       - name: Install dependencies
         run: yarn install
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
       - name: Build
         run: ${{ matrix.settings.build }}
         if: ${{ !matrix.settings.docker }}
