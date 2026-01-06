@@ -60,11 +60,12 @@ jobs:
           #     echo "INPUT(-lunwind)" > "${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/${CLANG_VERSION}/lib/linux/aarch64/libgcc.a"
           #     yarn build --target aarch64-linux-android
           #     ${ANDROID_NDK_LATEST_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip polars/*.node
-
           - host: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            # Use the LLVM_PATH environment variable set by the install action
-            build: yarn build --target aarch64-unknown-linux-musl -x
+            target: aarch64-linux-android
+            build: yarn build --target aarch64-linux-android
+          # - host: ubuntu-latest
+          #   target: aarch64-unknown-linux-musl
+          #   build: yarn build --target aarch64-unknown-linux-musl -x
 
     name: ${{ matrix.settings.target }} - node@24
     runs-on: ${{ matrix.settings.host }}
@@ -115,7 +116,7 @@ jobs:
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
-          version: "12.0.0"
+          version: "14.0.0"
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
