@@ -8,6 +8,7 @@ use polars::frame::row::{infer_schema, Row};
 use polars_io::csv::write::CsvWriterOptions;
 use polars_io::mmap::MmapBytesReader;
 use polars_io::RowIndex;
+use polars_io::pl_async::get_runtime;
 use polars_utils::aliases::PlFixedStateQuality;
 use std::borrow::Borrow;
 use std::collections::HashMap;

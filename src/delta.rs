@@ -1,15 +1,18 @@
 use polars_core::prelude::DataFrame;
-use polars_io::{parquet::ParquetReader, SerReader};
+use polars_io::SerReader;
+use polars_io::prelude::ParquetReader;
 use polars_lazy::{dsl::UnionArgs, frame::{IntoLazy, LazyFrame}};
 use polars::prelude::concat;
 use deltalake::{DeltaTableBuilder, DeltaTableError};
 use crate::dataframe::ReadDeltaOptions;
+use url::Url;
 
 pub async fn read_delta_table(path: &str, 
     options: ReadDeltaOptions,
     ) -> Result<LazyFrame, DeltaTableError> {
-    let mut db = DeltaTableBuilder::from_uri(path)
-                .with_allow_http(false);
+    let delta_path = Url::from_directory_path(path).unwrap();
+    let mut db = DeltaTableBuilder::from_url(delta_path)
+            .map_err(|e| DeltaTableError::Generic(format!("Failed to read DeltaTableBuilder: {}", e)))?;
 
     // if version specified, add it
     if options.version.is_some() {
