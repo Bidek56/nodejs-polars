@@ -1,5 +1,5 @@
-use polars::export::arrow::array::Array;
 use polars::prelude::*;
+use polars_arrow::array::Array;
 
 pub(crate) fn scatter(mut s: Series, idx: &Series, values: &Series) -> PolarsResult<Series> {
     let logical_dtype = s.dtype().clone();
@@ -75,12 +75,12 @@ pub(crate) fn scatter(mut s: Series, idx: &Series, values: &Series) -> PolarsRes
             std::mem::take(ca).scatter(idx, values.into_iter())
         }
         DataType::Boolean => {
-            let ca = s.bool()?;
+            let mut ca = s.bool()?.clone();
             let values = values.bool()?;
             ca.scatter(idx, values)
         }
         DataType::String => {
-            let ca = s.str()?;
+            let mut ca = s.str()?.clone();
             let values = values.str()?;
             ca.scatter(idx, values)
         }

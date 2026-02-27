@@ -1,10 +1,10 @@
 import type { DateFunctions } from "../../shared_traits";
-import { type Expr, _Expr } from "../expr";
+import { _Expr, type Expr, exprToLitOrExpr } from "../expr";
 
 /**
- * DateTime functions
+ * DateTime functions for expression
  */
-export type ExprDateTime = DateFunctions<Expr>;
+export interface ExprDateTime extends DateFunctions<Expr> {}
 
 export const ExprDateTimeFunctions = (_expr: any): ExprDateTime => {
   const wrap = (method, ...args: any[]): Expr => {
@@ -26,5 +26,32 @@ export const ExprDateTimeFunctions = (_expr: any): ExprDateTime => {
     week: wrapNullArgs("week"),
     weekday: wrapNullArgs("weekday"),
     year: wrapNullArgs("year"),
+    truncate: (every) => wrap("dtTruncate", exprToLitOrExpr(every)._expr),
+    round: (every) => wrap("dtRound", exprToLitOrExpr(every)._expr),
+    replaceTimeZone: (
+      timeZone: string,
+      ambiguous: string | Expr = "raise",
+      nonExistent: string = "raise",
+    ) => {
+      const res = wrap(
+        "dtReplaceTimeZone",
+        timeZone,
+        exprToLitOrExpr(ambiguous)._expr,
+        nonExistent,
+      );
+      if (res._expr.toString().startsWith("Error:")) {
+        throw new Error(res._expr.toString());
+      }
+
+      return res;
+    },
+    convertTimeZone: (timeZone: string) => {
+      const res = wrap("dtConvertTimeZone", timeZone);
+      if (res._expr.toString().startsWith("Error:")) {
+        throw new Error(res._expr.toString());
+      }
+
+      return res;
+    },
   };
 };

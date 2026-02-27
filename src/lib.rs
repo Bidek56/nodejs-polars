@@ -10,11 +10,7 @@ pub fn version() -> &'static str {
     VERSION
 }
 
-#[napi]
-pub fn toggle_string_cache() {
-    polars::enable_string_cache()
-}
-
+pub mod cfg;
 pub mod conversion;
 pub mod dataframe;
 pub mod datatypes;
@@ -26,9 +22,8 @@ pub mod list_construction;
 pub mod prelude;
 pub mod series;
 pub mod set;
-pub mod utils;
 pub mod sql;
-pub mod delta;
+pub mod utils;
 
 pub use polars_core;
 

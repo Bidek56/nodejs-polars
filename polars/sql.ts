@@ -1,15 +1,15 @@
-import { DataFrame, type LazyDataFrame, _LazyDataFrame } from ".";
+import { _LazyDataFrame, DataFrame, type LazyDataFrame } from ".";
 import pli from "./internals/polars_internal";
+
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
 /**
  * Run SQL queries against DataFrame/LazyFrame data.
  *
- * @warning This functionality is considered **unstable**, although it is close to being
- * considered stable. It may be changed at any point without it being considered
- * a breaking change.
+ * @experimental This functionality is considered **unstable**, although it is close to being
+ * considered stable. It may be changed at any point without it being considered a breaking change.
  */
-export interface SQLContext {
+export interface iSQLContext {
   /**
    * Parse the given SQL query and execute it against the registered frame data.
    *
@@ -81,10 +81,9 @@ export interface SQLContext {
    * // └────────┴─────────────┴─────────┘
    * ```
    */
-  execute(query: string): LazyDataFrame;
   execute(query: string, { eager }: { eager: true }): DataFrame;
   execute(query: string, { eager }: { eager: false }): LazyDataFrame;
-
+  execute(query: string): LazyDataFrame;
   /**
    * Register a single frame as a table, using the given name.
    *
@@ -171,8 +170,8 @@ export interface SQLContext {
    * @example
    * ```ts
    * const df0 = pl.DataFrame({"ints": [9, 8, 7, 6, 5]});
-   * const lf1 = pl.LazyDataFrame({"text": ["a", "b", "c"]});
-   * const lf2 = pl.LazyDataFrame({"misc": ["testing1234"]});
+   * const lf1 = pl.DataFrame({"text": ["a", "b", "c"]}).lazy();
+   * const lf2 = pl.DataFrame({"misc": ["testing1234"]}).lazy();
    *
    * // Register with a SQLContext object
    * const ctx = pl.SQLContext({ test1: df0, test2: lf1, test3: lf2 });
@@ -228,7 +227,7 @@ export interface SQLContext {
   tables(): string[];
 }
 
-export class SQLContext implements SQLContext {
+export class SQLContext implements iSQLContext {
   #ctx: any; // native SQLContext
   [INSPECT](): string {
     return `SQLContext: {${this.#ctx.getTables().join(", ")}}`;

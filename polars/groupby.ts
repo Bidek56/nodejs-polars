@@ -1,9 +1,9 @@
-import { type DataFrame, _DataFrame } from "./dataframe";
-import * as utils from "./utils";
-import util from "util";
+import util from "node:util";
+import { _DataFrame, type DataFrame } from "./dataframe";
 import type { Expr } from "./lazy/expr";
 import { col, exclude } from "./lazy/functions";
 import type { ColumnsOrExpr, StartBy } from "./utils";
+import * as utils from "./utils";
 
 const inspect = Symbol.for("nodejs.util.inspect.custom");
 const inspectOpts = { colors: true, depth: null };
@@ -15,44 +15,82 @@ export interface GroupBy {
   [inspect](): string;
   /**
    * Aggregate the groups into Series.
+   * @deprecated
    */
   aggList(): DataFrame;
   /**
-   * __Use multiple aggregations on columns.__
-   * This can be combined with complete lazy API and is considered idiomatic polars.
+   * Compute aggregations for each group of a group by operation.
    * ___
-   * @param columns - map of 'col' -> 'agg'
-   *
-   *  - using lazy API (recommended): `[col('foo').sum(), col('bar').min()]`
-   *  - using multiple aggs per column: `{'foo': ['sum', 'numUnique'], 'bar': ['min'] }`
-   *  - using single agg per column:  `{'foo': ['sum'], 'bar': 'min' }`
+   * @param columns - Aggregations to compute for each group of the group by operation, specified as positional arguments.
    * @example
    * ```
+   * const df = pl.DataFrame({
+      foo: [1, 2, 2, 3, 3],
+      ham: [6.0, 6, 7, 8.0, 8.0],
+      bar: ["a", "b", "c", "c", "c"],
+      spam: ["a", "b", "c", "c", "c"],
+    });
    * // use lazy api rest parameter style
-   * > df.groupBy('foo', 'bar')
-   * >   .agg(pl.sum('ham'), col('spam').tail(4).sum())
-   *
-   * // use lazy api array style
-   * > df.groupBy('foo', 'bar')
-   * >   .agg([pl.sum('ham'), col('spam').tail(4).sum()])
-   *
-   * // use a mapping
-   * > df.groupBy('foo', 'bar')
-   * >   .agg({'spam': ['sum', 'min']})
-   *
+   * > df.groupBy('foo', 'bar').agg(pl.count('ham'), pl.col('spam')).sort(["foo", "bar"]);
+   * shape: (4, 4)
+    ┌─────┬─────┬─────┬────────────┐
+    │ foo ┆ bar ┆ ham ┆ spam       │
+    │ --- ┆ --- ┆ --- ┆ ---        │
+    │ f64 ┆ str ┆ u32 ┆ list[str]  │
+    ╞═════╪═════╪═════╪════════════╡
+    │ 1.0 ┆ a   ┆ 1   ┆ ["a"]      │
+    │ 2.0 ┆ b   ┆ 1   ┆ ["b"]      │
+    │ 2.0 ┆ c   ┆ 1   ┆ ["c"]      │
+    │ 3.0 ┆ c   ┆ 2   ┆ ["c", "c"] │
+    └─────┴─────┴─────┴────────────┘
+   * 
+   * > df.groupBy("bar").agg(pl.col("foo"), pl.col("ham"), pl.col("spam") ).sort("bar");
+   * shape: (3, 4)
+    ┌─────┬─────────────────┬─────────────────┬─────────────────┐
+    │ bar ┆ foo             ┆ ham             ┆ spam            │
+    │ --- ┆ ---             ┆ ---             ┆ ---             │
+    │ str ┆ list[f64]       ┆ list[f64]       ┆ list[str]       │
+    ╞═════╪═════════════════╪═════════════════╪═════════════════╡
+    │ a   ┆ [1.0]           ┆ [6.0]           ┆ ["a"]           │
+    │ b   ┆ [2.0]           ┆ [6.0]           ┆ ["b"]           │
+    │ c   ┆ [2.0, 3.0, 3.0] ┆ [7.0, 8.0, 8.0] ┆ ["c", "c", "c"] │
+    └─────┴─────────────────┴─────────────────┴─────────────────┘
+   * > const h = pl.col("ham");
+   * > df.groupBy("bar").agg(h.sum().as("sum_ham"), h.min().as("min_ham"), h.max().as("max_ham"));
+   * shape: (3, 4)
+    ┌─────┬─────────┬─────────┬─────────┐
+    │ bar ┆ sum_ham ┆ min_ham ┆ max_ham │
+    │ --- ┆ ---     ┆ ---     ┆ ---     │
+    │ str ┆ f64     ┆ f64     ┆ f64     │
+    ╞═════╪═════════╪═════════╪═════════╡
+    │ a   ┆ 6.0     ┆ 6.0     ┆ 6.0     │
+    │ b   ┆ 6.0     ┆ 6.0     ┆ 6.0     │
+    │ c   ┆ 23.0    ┆ 7.0     ┆ 8.0     │
+    └─────┴─────────┴─────────┴─────────┘
    * ```
    */
   agg(...columns: Expr[]): DataFrame;
   agg(columns: Record<string, keyof Expr | (keyof Expr)[]>): DataFrame;
   /**
-   * Count the number of values in each group.
+   * Return the number of rows in each group.
+   * @example
+   * > df = pl.DataFrame({a: ["Apple", "Apple", "Orange"], b: [1, None, 2]});
+     > df.groupBy("a").len()
+    shape: (2, 2)
+    ┌────────┬─────┐
+    │ a      ┆ len │
+    │ ---    ┆ --- │
+    │ str    ┆ u32 │
+    ╞════════╪═════╡
+    │ Apple  ┆ 2   │
+    │ Orange ┆ 1   │
+    └────────┴─────┘
    */
-  count(): DataFrame;
+  len(): DataFrame;
   /**
    * Aggregate the first values in the group.
    */
   first(): DataFrame;
-
   /**
    * Return a `DataFrame` with:
    *   - the groupby keys
@@ -140,11 +178,14 @@ export interface GroupBy {
    * @param valuesCol - Column that will be aggregated.
    *
    */
+  pivot(pivotCol: string, valuesCol: string): PivotOps;
   pivot({
     pivotCol,
     valuesCol,
-  }: { pivotCol: string; valuesCol: string }): PivotOps;
-  pivot(pivotCol: string, valuesCol: string): PivotOps;
+  }: {
+    pivotCol: string;
+    valuesCol: string;
+  }): PivotOps;
   /**
    * Compute the quantile per group.
    */
@@ -159,9 +200,8 @@ export interface GroupBy {
 
 export type PivotOps = Pick<
   GroupBy,
-  "count" | "first" | "max" | "mean" | "median" | "min" | "sum"
+  "len" | "first" | "max" | "mean" | "median" | "min" | "sum"
 > & { [inspect](): string };
-
 /** @ignore */
 export function _GroupBy(df: any, by: string[], maintainOrder = false) {
   const customInspect = () =>
@@ -178,7 +218,7 @@ export function _GroupBy(df: any, by: string[], maintainOrder = false) {
       throw new Error("must specify both pivotCol and valuesCol");
     }
 
-    return PivotOps(df, by, opts.pivotCol, opts.valuesCol);
+    return PivotOps(_DataFrame(df), by, opts.pivotCol, opts.valuesCol);
   };
 
   const agg = (...aggs): DataFrame => {
@@ -189,7 +229,7 @@ export function _GroupBy(df: any, by: string[], maintainOrder = false) {
         .lazy()
         .groupBy(by, maintainOrder)
         .agg(...aggs)
-        .collectSync({ noOptimization: true });
+        .collectSync();
     }
     const pairs = Object.entries(aggs[0]).flatMap(([key, values]) => {
       return [values].flat(2).map((v) => col(key)[v as any]());
@@ -199,7 +239,7 @@ export function _GroupBy(df: any, by: string[], maintainOrder = false) {
       .lazy()
       .groupBy(by, maintainOrder)
       .agg(...pairs)
-      .collectSync({ noOptimization: true });
+      .collectSync();
   };
 
   return Object.seal({
@@ -207,8 +247,8 @@ export function _GroupBy(df: any, by: string[], maintainOrder = false) {
     agg,
     pivot,
     aggList: () => agg(exclude(by as any)),
-    count() {
-      return _DataFrame(df.groupby([by].flat(), null, "count"));
+    len() {
+      return _DataFrame(df.groupby([by].flat(), by, "count"));
     },
     first: () => agg(exclude(by as any).first()),
     groups() {
@@ -229,13 +269,13 @@ export function _GroupBy(df: any, by: string[], maintainOrder = false) {
 }
 
 function PivotOps(
-  df: any,
+  df: DataFrame,
   by: string | string[],
   pivotCol: string,
   valueCol: string,
 ): PivotOps {
   const pivot = (agg) => () =>
-    _DataFrame(df.pivot([by].flat(), [pivotCol], [valueCol], agg));
+    df.pivot(valueCol, { on: pivotCol, index: by, aggregateFunc: agg });
   const customInspect = () =>
     util.formatWithOptions(inspectOpts, "PivotOps {by: %O}", by);
 
@@ -246,7 +286,7 @@ function PivotOps(
     min: pivot("min"),
     max: pivot("max"),
     mean: pivot("mean"),
-    count: pivot("count"),
+    len: pivot("len"),
     median: pivot("median"),
   };
 }
@@ -266,7 +306,6 @@ export function RollingGroupBy(
   offset?: string,
   closed?,
   by?: ColumnsOrExpr,
-  check_sorted?: boolean,
 ): RollingGroupBy {
   return {
     agg(column: ColumnsOrExpr, ...columns: ColumnsOrExpr[]) {
@@ -278,7 +317,6 @@ export function RollingGroupBy(
           offset,
           closed,
           by,
-          check_sorted,
         } as any)
         .agg(column as any, ...columns)
         .collectSync();
@@ -299,11 +337,11 @@ export function DynamicGroupBy(
   every: string,
   period?: string,
   offset?: string,
+  label?: string,
   includeBoundaries?: boolean,
   closed?: string,
   by?: ColumnsOrExpr,
-  start_by?: StartBy,
-  check_sorted?: boolean,
+  startBy?: StartBy,
 ): DynamicGroupBy {
   return {
     agg(column: ColumnsOrExpr, ...columns: ColumnsOrExpr[]) {
@@ -314,14 +352,14 @@ export function DynamicGroupBy(
           every,
           period,
           offset,
+          label,
           includeBoundaries,
           closed,
           by,
-          start_by,
-          check_sorted,
+          startBy,
         } as any)
         .agg(column as any, ...columns)
-        .collectSync({ noOptimizations: true });
+        .collectSync();
     },
   };
 }

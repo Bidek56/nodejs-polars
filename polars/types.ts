@@ -1,3 +1,7 @@
+import { DataFrame } from ".";
+import { LazyDataFrame } from "./lazy/dataframe";
+import type { ValueOrArray } from "./utils";
+
 /**
  * Downsample rules
  */
@@ -32,40 +36,39 @@ export type RankMethod =
   | "random";
 
 /**
+ * Round modes
+ */
+export type RoundMode = "halftoeven" | "halfawayfromzero";
+
+/**
  * Options for {@link concat}
  */
 export interface ConcatOptions {
   rechunk?: boolean;
-  how?: "vertical" | "horizontal" | "diagonal";
+  parallel?: boolean;
+  how?:
+    | "vertical"
+    | "verticalRelaxed"
+    | "horizontal"
+    | "diagonal"
+    | "diagonalRelaxed"
+    | "align"
+    | "alignInner"
+    | "alignFull"
+    | "alignLeft"
+    | "alignRight";
 }
 /**
- * Options for {@link DataFrame.writeCSV}
- * @category Options
- */
-export interface WriteCsvOptions {
-  includeBom?: boolean;
-  includeHeader?: boolean;
-  sep?: string;
-  quote?: string;
-  lineTerminator?: string;
-  batchSize?: number;
-  datetimeFormat?: string;
-  dateFormat?: string;
-  timeFormat?: string;
-  floatPrecision?: number;
-  nullValue?: string;
-}
-/**
+ * Options for @see {@link DataFrame.writeCSV}
  * Options for @see {@link LazyDataFrame.sinkCSV}
  * @category Options
  */
-export interface SinkCsvOptions {
-  includeHeader?: boolean;
-  quote?: string;
+export interface CsvWriterOptions {
   includeBom?: boolean;
+  includeHeader?: boolean;
   separator?: string;
-  lineTerminator?: string;
   quoteChar?: string;
+  lineTerminator?: string;
   batchSize?: number;
   datetimeFormat?: string;
   dateFormat?: string;
@@ -74,8 +77,15 @@ export interface SinkCsvOptions {
   nullValue?: string;
   maintainOrder?: boolean;
 }
+
+export interface SinkOptions {
+  syncOnClose: any; // Call sync when closing the file.
+  maintainOrder: boolean; // The output file needs to maintain order of the data that comes in.
+  mkdir: boolean; // Recursively create all the directories in the path.
+}
+
 /**
- * Options for @see {@link LazyDataFrame.sinkParquet}
+ * Options for @see {@link LazyDataFrame.sinkParquet }
  * @category Options
  */
 export interface SinkParquetOptions {
@@ -91,6 +101,33 @@ export interface SinkParquetOptions {
   simplifyExpression?: boolean;
   slicePushdown?: boolean;
   noOptimization?: boolean;
+  cloudOptions?: Record<string, string>;
+  retries?: number;
+  sinkOptions?: SinkOptions;
+}
+/**
+ * Options for @see {@link LazyDataFrame.sinkNdJson}
+ * @category Options
+ */
+export interface SinkJsonOptions {
+  cloudOptions?: Record<string, string>;
+  retries?: number;
+  syncOnClose?: string; // Call sync when closing the file.
+  maintainOrder?: boolean; // The output file needs to maintain order of the data that comes in.
+  mkdir?: boolean; // Recursively create all the directories in the path.
+}
+/**
+ * Options for @see {@link LazyDataFrame.sinkIpc}
+ * @category Options
+ */
+export interface SinkIpcOptions {
+  compression?: string;
+  compatLevel?: string;
+  cloudOptions?: Record<string, string>;
+  retries?: number;
+  syncOnClose?: string; // Call sync when closing the file.
+  maintainOrder?: boolean; // The output file needs to maintain order of the data that comes in.
+  mkdir?: boolean; // Recursively create all the directories in the path.
 }
 /**
  * Options for {@link DataFrame.writeJSON}
@@ -141,12 +178,22 @@ export interface ReadParquetOptions {
  * Options for {@link scanParquet}
  */
 export interface ScanParquetOptions {
-  columns?: string[] | number[];
-  numRows?: number;
-  parallel?: "auto" | "columns" | "row_groups" | "none";
-  rowCount?: RowCount;
+  nRows?: number;
+  rowIndexName?: string;
+  rowIndexOffset?: number;
   cache?: boolean;
+  parallel?: "auto" | "columns" | "row_groups" | "none";
+  glob?: boolean;
+  hivePartitioning?: boolean;
+  hiveSchema?: unknown;
+  tryParseHiveDates?: boolean;
   rechunk?: boolean;
+  lowMemory?: boolean;
+  useStatistics?: boolean;
+  cloudOptions?: Record<string, string>;
+  retries?: number;
+  includeFilePaths?: string;
+  allowMissingColumns?: boolean;
 }
 
 /**
@@ -156,7 +203,7 @@ export interface RowCount {
   /** name of column */
   name: string;
   /** offset */
-  offset: string;
+  offset: number;
 }
 
 /**
@@ -188,35 +235,92 @@ export type InterpolationMethod =
 /**
  * Join types
  */
-export type JoinType = "left" | "inner" | "outer" | "semi" | "anti" | "cross";
+export type JoinType = "left" | "inner" | "full" | "semi" | "anti" | "cross";
 
-/** @ignore */
-export type JoinBaseOptions = {
-  how?: JoinType;
+/**
+ * options for same named column join @see {@link DataFrame.join}
+ */
+export type SameNameColumnJoinOptions<
+  L extends string = string,
+  R extends string = string,
+> = {
+  /** Name(s) of the join columns in both DataFrames. */
+  on: ValueOrArray<L & R>;
+  /** Join strategy */
+  how?: Exclude<JoinType, "cross">;
+  /** Suffix to append to columns with a duplicate name. */
   suffix?: string;
+  /** Coalescing behavior (merging of join columns). */
+  coalesce?: boolean;
+  // Checks if join is of specified type.
+  validate?: string;
+};
+/**
+ * options for differently named column join @see {@link DataFrame.join}
+ */
+export type DifferentNameColumnJoinOptions<
+  L extends string = string,
+  R extends string = string,
+> = {
+  /** Name(s) of the left join column(s). */
+  leftOn: ValueOrArray<L>;
+  /** Name(s) of the right join column(s). */
+  rightOn: ValueOrArray<R>;
+  /** Join strategy */
+  how?: Exclude<JoinType, "cross">;
+  /** Suffix to append to columns with a duplicate name. */
+  suffix?: string;
+  /** Coalescing behavior (merging of join columns). */
+  coalesce?: boolean;
+  // Checks if join is of specified type.
+  validate?: string;
+};
+/**
+ * options for cross join @see {@link DataFrame.join}
+ */
+export type CrossJoinOptions = {
+  /** Join strategy */
+  how: "cross";
+  /** Suffix to append to columns with a duplicate name. */
+  suffix?: string;
+  /** Coalescing behavior (merging of join columns). */
+  coalesce?: boolean;
+  // Checks if join is of specified type.
+  validate?: string;
 };
 /**
  * options for join operations @see {@link DataFrame.join}
  */
-export interface JoinOptions {
-  /** left join column */
-  leftOn?: string | Array<string>;
-  /** right join column */
-  rightOn?: string | Array<string>;
-  /** left and right join column */
-  on?: string | Array<string>;
-  /** join type */
-  how?: JoinType;
-  suffix?: string;
-}
+export type JoinOptions<L extends string = string, R extends string = string> =
+  | SameNameColumnJoinOptions<L, R>
+  | DifferentNameColumnJoinOptions<L, R>
+  | CrossJoinOptions;
 
+type LazyJoinBase = {
+  /** Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel. */
+  allowParallel?: boolean;
+  /** Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel. */
+  forceParallel?: boolean;
+};
+export type LazySameNameColumnJoinOptions<
+  L extends string = string,
+  R extends string = string,
+> = SameNameColumnJoinOptions<L, R> & LazyJoinBase;
+export type LazyDifferentNameColumnJoinOptions<
+  L extends string = string,
+  R extends string = string,
+> = DifferentNameColumnJoinOptions<L, R> & LazyJoinBase;
+export type LazyCrossJoinOptions = CrossJoinOptions & LazyJoinBase;
 /**
  * options for lazy join operations @see {@link LazyDataFrame.join}
  */
-export interface LazyJoinOptions extends JoinOptions {
-  allowParallel?: boolean;
-  forceParallel?: boolean;
-}
+export type LazyJoinOptions<
+  L extends string = string,
+  R extends string = string,
+> =
+  | LazySameNameColumnJoinOptions<L, R>
+  | LazyDifferentNameColumnJoinOptions<L, R>
+  | LazyCrossJoinOptions;
 
 /**
  * options for lazy operations @see {@link LazyDataFrame.collect}
@@ -226,8 +330,18 @@ export type LazyOptions = {
   predicatePushdown?: boolean;
   projectionPushdown?: boolean;
   simplifyExpression?: boolean;
-  stringCache?: boolean;
+  slicePushdown?: boolean;
   noOptimization?: boolean;
+  commSubplanElim?: boolean;
+  commSubexprElim?: boolean;
+  streaming?: boolean;
+};
+
+/**
+ * options for lazy operations @see {@link LazyDataFrame.collectSync}
+ */
+export type CollectSyncOptions = {
+  engine?: Engine;
 };
 
 /**
@@ -264,3 +378,10 @@ export interface RollingSkewOptions {
  * ClosedWindow types
  */
 export type ClosedWindow = "None" | "Both" | "Left" | "Right";
+
+/**
+ * Engine types
+ * @category Options
+ * Options for {@link LazyDataFrame.collectSync}
+ */
+export type Engine = "auto" | "cpu" | "in-memory" | "streaming";

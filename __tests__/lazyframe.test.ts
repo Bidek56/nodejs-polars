@@ -1,5 +1,5 @@
+import fs from "node:fs";
 import pl from "@polars";
-import fs from "fs";
 
 describe("lazyframe", () => {
   test("columns", () => {
@@ -28,6 +28,14 @@ describe("lazyframe", () => {
     const actual = await expected.lazy().collect();
     expect(actual).toFrameEqual(expected);
   });
+  test("collect:streaming", async () => {
+    const expected = pl.DataFrame({
+      foo: [1, 2],
+      bar: ["a", "b"],
+    });
+    const actual = await expected.lazy().collect({ streaming: true });
+    expect(actual).toFrameEqual(expected);
+  });
   test("describeOptimizedPlan", () => {
     const df = pl
       .DataFrame({
@@ -36,7 +44,7 @@ describe("lazyframe", () => {
       })
       .lazy();
     let actual = df.describeOptimizedPlan().replace(/\s+/g, " ");
-    const expected = `DF ["foo", "bar"]; PROJECT */2 COLUMNS; SELECTION: "None"`;
+    const expected = `DF ["foo", "bar"]; PROJECT */2 COLUMNS`;
     expect(actual).toEqual(expected);
     actual = df.describePlan().replace(/\s+/g, " ");
     expect(actual).toEqual(expected);
@@ -97,42 +105,70 @@ describe("lazyframe", () => {
     expect(actual).toFrameEqualIgnoringOrder(expected);
   });
   test("unique", () => {
-    const actual = pl
+    const ldf = pl
       .DataFrame({
         foo: [1, 2, 2, 3],
         bar: [1, 2, 2, 4],
         ham: ["a", "d", "d", "c"],
       })
-      .lazy()
-      .unique()
-      .collectSync();
-    const expected = pl.DataFrame({
+      .lazy();
+    let actual = ldf.unique().collectSync();
+    let expected = pl.DataFrame({
       foo: [1, 2, 3],
       bar: [1, 2, 4],
       ham: ["a", "d", "c"],
     });
     expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique("foo", "first", true).collectSync();
+    expect(actual).toFrameEqual(expected);
+    actual = ldf.unique("foo").collectSync();
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique(["foo"]).collectSync();
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique(["foo", "ham"], "first", true).collectSync();
+    expect(actual).toFrameEqual(expected);
+    actual = ldf.unique(["foo", "ham"]).collectSync();
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique(["foo", "ham"], "none", true).collectSync();
+    expected = pl.DataFrame({
+      foo: [1, 3],
+      bar: [1, 4],
+      ham: ["a", "c"],
+    });
+    expect(actual).toFrameEqual(expected);
   });
   test("unique:subset", () => {
-    const actual = pl
+    const ldf = pl
       .DataFrame({
         foo: [1, 2, 2, 2],
-        bar: [1, 2, 2, 2],
+        bar: [1, 2, 2, 3],
         ham: ["a", "b", "c", "c"],
       })
-      .lazy()
-      .unique({ subset: ["foo", "ham"] })
-      .collectSync();
-    const expected = pl.DataFrame({
+      .lazy();
+    let actual = ldf.unique({ subset: ["foo", "ham"] }).collectSync();
+    let expected = pl.DataFrame({
       foo: [1, 2, 2],
       bar: [1, 2, 2],
+      ham: ["a", "b", "c"],
+    });
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique({ subset: ["ham"] }).collectSync();
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf
+      .unique({ subset: ["ham"], keep: "first", maintainOrder: true })
+      .collectSync();
+    expect(actual).toFrameEqualIgnoringOrder(expected);
+    actual = ldf.unique({ subset: ["ham"], keep: "last" }).collectSync();
+    expected = pl.DataFrame({
+      foo: [1, 2, 2],
+      bar: [1, 2, 3],
       ham: ["a", "b", "c"],
     });
     expect(actual).toFrameEqualIgnoringOrder(expected);
   });
   // run this test 100 times to make sure it is deterministic.
   test("unique:maintainOrder", () => {
-    for (const x of Array.from({ length: 100 })) {
+    for (const _x of Array.from({ length: 100 })) {
       const actual = pl
         .DataFrame({
           foo: [0, 1, 2, 2, 2],
@@ -152,7 +188,7 @@ describe("lazyframe", () => {
   });
   // run this test 100 times to make sure it is deterministic.
   test("unique:maintainOrder:single subset", () => {
-    for (const x of Array.from({ length: 100 })) {
+    for (const _x of Array.from({ length: 100 })) {
       const actual = pl
         .DataFrame({
           foo: [0, 1, 2, 2, 2],
@@ -172,7 +208,7 @@ describe("lazyframe", () => {
   });
   // run this test 100 times to make sure it is deterministic.
   test("unique:maintainOrder:multi subset", () => {
-    for (const x of Array.from({ length: 100 })) {
+    for (const _x of Array.from({ length: 100 })) {
       const actual = pl
         .DataFrame({
           foo: [0, 1, 2, 2, 2],
@@ -268,7 +304,10 @@ describe("lazyframe", () => {
       foo: [1],
       bar: ["a"],
     });
-    const actual = await df.lazy().select("*").fetch(1);
+    const actual = await df
+      .lazy()
+      .select("*")
+      .fetch(1, { noOptimization: true });
     expect(actual).toFrameEqual(expected);
   });
   test("fetchSync", () => {
@@ -283,6 +322,18 @@ describe("lazyframe", () => {
     let actual = df.lazy().select("*").fetchSync(1);
     expect(actual).toFrameEqual(expected);
     actual = df.lazy().select("*").fetchSync(1, { noOptimization: true });
+    expect(actual).toFrameEqual(expected);
+  });
+  test("first", () => {
+    const df = pl.DataFrame({
+      foo: [1, 2],
+      bar: ["a", "b"],
+    });
+    const expected = pl.DataFrame({
+      foo: [1],
+      bar: ["a"],
+    });
+    const actual: pl.DataFrame = df.lazy().first();
     expect(actual).toFrameEqual(expected);
   });
   test("fillNull:zero", () => {
@@ -349,7 +400,70 @@ describe("lazyframe", () => {
     });
     expect(actual).toFrameEqual(expected);
   });
-  describe("groupby", () => {});
+  describe("groupby", () => {
+    test("groupBy", () => {
+      const ldf = pl
+        .DataFrame({
+          foo: [1, 2, 3, 4],
+          ham: ["a", "a", "b", "b"],
+        })
+        .lazy();
+
+      let actual = ldf.groupBy("ham").agg(pl.col("foo").sum()).collectSync();
+      let expected = pl.DataFrame({
+        ham: ["a", "b"],
+        foo: [3, 7],
+      });
+      expect(actual).toFrameEqual(expected);
+
+      actual = ldf.groupBy("ham", true).agg(pl.col("foo").sum()).collectSync();
+      expect(actual).toFrameEqual(expected);
+
+      actual = ldf
+        .groupBy("ham", { maintainOrder: true })
+        .agg(pl.col("foo").sum())
+        .collectSync();
+      expect(actual).toFrameEqual(expected);
+
+      actual = ldf
+        .groupBy("ham", { maintainOrder: true })
+        .head(1)
+        .collectSync();
+      expected = pl.DataFrame({
+        ham: ["a", "b"],
+        foo: [1, 3],
+      });
+      expect(actual).toFrameEqual(expected);
+
+      actual = ldf
+        .groupBy("ham", { maintainOrder: true })
+        .tail(1)
+        .collectSync();
+      expected = pl.DataFrame({
+        ham: ["a", "b"],
+        foo: [2, 4],
+      });
+      expect(actual).toFrameEqual(expected);
+      actual = ldf.groupBy("ham").len().collectSync();
+      expected = pl.DataFrame(
+        {
+          ham: ["a", "b"],
+          len: [2, 2],
+        },
+        { schema: { ham: pl.String, len: pl.UInt32 } },
+      );
+      expect(actual).toFrameEqual(expected);
+      actual = ldf.groupBy("ham").len("foo").collectSync();
+      expected = pl.DataFrame(
+        {
+          ham: ["a", "b"],
+          foo: [2, 2],
+        },
+        { schema: { ham: pl.String, foo: pl.UInt32 } },
+      );
+      expect(actual).toFrameEqual(expected);
+    });
+  });
   test("head", () => {
     const actual = pl
       .DataFrame({
@@ -366,42 +480,30 @@ describe("lazyframe", () => {
     expect(actual).toFrameEqual(expected);
   });
   describe("join", () => {
+    const df = pl.DataFrame({
+      foo: [1, 2, 3],
+      bar: [6.0, 7.0, 8.0],
+      ham: ["a", "b", "c"],
+    });
+    const otherDF = pl
+      .DataFrame({
+        apple: ["x", "y", "z"],
+        ham: ["a", "b", "d"],
+        foo: [1, 10, 11],
+      })
+      .lazy();
     test("on", () => {
-      const df = pl.DataFrame({
-        foo: [1, 2, 3],
-        bar: [6.0, 7.0, 8.0],
-        ham: ["a", "b", "c"],
-      });
-      const otherDF = pl
-        .DataFrame({
-          apple: ["x", "y", "z"],
-          ham: ["a", "b", "d"],
-        })
-        .lazy();
       const actual = df.lazy().join(otherDF, { on: "ham" }).collectSync();
-
       const expected = pl.DataFrame({
         foo: [1, 2],
         bar: [6.0, 7.0],
         ham: ["a", "b"],
         apple: ["x", "y"],
+        fooright: [1, 10],
       });
       expect(actual).toFrameEqualIgnoringOrder(expected);
     });
     test("on:multiple-columns", () => {
-      const df = pl.DataFrame({
-        foo: [1, 2, 3],
-        bar: [6.0, 7.0, 8.0],
-        ham: ["a", "b", "c"],
-      });
-      const otherDF = pl
-        .DataFrame({
-          apple: ["x", "y", "z"],
-          ham: ["a", "b", "d"],
-          foo: [1, 10, 11],
-        })
-        .lazy();
-
       const actual = df
         .lazy()
         .join(otherDF, { on: ["ham", "foo"] })
@@ -550,19 +652,6 @@ describe("lazyframe", () => {
       expect(actual).toFrameEqualIgnoringOrder(expected);
     });
     test("how:left", () => {
-      const df = pl.DataFrame({
-        foo: [1, 2, 3],
-        bar: [6.0, 7.0, 8.0],
-        ham: ["a", "b", "c"],
-      });
-      const otherDF = pl
-        .DataFrame({
-          apple: ["x", "y", "z"],
-          ham: ["a", "b", "d"],
-          foo: [1, 10, 11],
-        })
-        .lazy();
-
       const actual = df
         .lazy()
         .join(otherDF, {
@@ -579,12 +668,7 @@ describe("lazyframe", () => {
       });
       expect(actual).toFrameEqualIgnoringOrder(expected);
     });
-    test("how:outer", () => {
-      const df = pl.DataFrame({
-        foo: [1, 2, 3],
-        bar: [6.0, 7.0, 8.0],
-        ham: ["a", "b", "c"],
-      });
+    test("how:full", () => {
       const otherDF = pl
         .DataFrame({
           apple: ["x", "y"],
@@ -593,36 +677,41 @@ describe("lazyframe", () => {
         })
         .lazy();
 
-      const actual = df
+      let actual = df
         .lazy()
         .join(otherDF, {
           on: "ham",
-          how: "outer",
+          how: "full",
+          coalesce: false,
         })
         .collectSync();
-      const expected = pl.DataFrame({
-        foo: [1, 2, 3, null],
-        bar: [6, 7, 8, null],
-        ham: ["a", "b", "c", "d"],
-        apple: ["x", null, null, "y"],
-        fooright: [1, null, null, 10],
+      let expected = pl.DataFrame({
+        foo: [1, null, 2, 3],
+        bar: [6, null, 7, 8],
+        ham: ["a", null, "b", "c"],
+        apple: ["x", "y", null, null],
+        hamright: ["a", "d", null, null],
+        fooright: [1, 10, null, null],
+      });
+      expect(actual).toFrameEqualIgnoringOrder(expected);
+      actual = df
+        .lazy()
+        .join(otherDF, {
+          on: "ham",
+          how: "full",
+          coalesce: true,
+        })
+        .collectSync();
+      expected = pl.DataFrame({
+        foo: [1, null, 2, 3],
+        bar: [6, null, 7, 8],
+        ham: ["a", "d", "b", "c"],
+        apple: ["x", "y", null, null],
+        fooright: [1, 10, null, null],
       });
       expect(actual).toFrameEqualIgnoringOrder(expected);
     });
     test("suffix", () => {
-      const df = pl.DataFrame({
-        foo: [1, 2, 3],
-        bar: [6.0, 7.0, 8.0],
-        ham: ["a", "b", "c"],
-      });
-      const otherDF = pl
-        .DataFrame({
-          apple: ["x", "y", "z"],
-          ham: ["a", "b", "d"],
-          foo: [1, 10, 11],
-        })
-        .lazy();
-
       const actual = df
         .lazy()
         .join(otherDF, {
@@ -639,6 +728,75 @@ describe("lazyframe", () => {
         foo_other: [1, 10, null],
       });
       expect(actual).toFrameEqualIgnoringOrder(expected);
+    });
+    test("coalesce:false", () => {
+      const actual = df
+        .lazy()
+        .join(otherDF, {
+          on: "ham",
+          how: "left",
+          suffix: "_other",
+          coalesce: false,
+        })
+        .collectSync();
+      const expected = pl.DataFrame({
+        foo: [1, 2, 3],
+        bar: [6, 7, 8],
+        ham: ["a", "b", "c"],
+        apple: ["x", "y", null],
+        ham_other: ["a", "b", null],
+        foo_other: [1, 10, null],
+      });
+      expect(actual).toFrameEqual(expected);
+    });
+    test("joinAsof", () => {
+      let actual = df.lazy().joinAsof(otherDF, { on: "ham" }).collectSync();
+      expect(actual.shape).toEqual({ height: 3, width: 5 });
+      actual = df
+        .lazy()
+        .joinAsof(otherDF, { leftOn: "ham", rightOn: "ham" })
+        .collectSync();
+      expect(actual.shape).toEqual({ height: 3, width: 5 });
+      let fn = () =>
+        df.lazy().joinAsof(otherDF, { leftOn: "ham" }).collectSync();
+      expect(fn).toThrow();
+      fn = () =>
+        df
+          .lazy()
+          .joinAsof(otherDF, { leftOn: "ham", rightOn: "ham", byLeft: "ham" })
+          .collectSync();
+      expect(fn).toThrow();
+      fn = () =>
+        df
+          .lazy()
+          .joinAsof(otherDF, { byLeft: "ham", byRight: "ham" })
+          .collectSync();
+      expect(fn).toThrow();
+      actual = df
+        .lazy()
+        .joinAsof(otherDF, {
+          leftOn: "ham",
+          rightOn: "ham",
+          byLeft: "ham",
+          byRight: "ham",
+        })
+        .collectSync();
+      expect(actual.shape).toEqual({ height: 3, width: 5 });
+      actual = df
+        .lazy()
+        .joinAsof(otherDF, {
+          leftOn: "ham",
+          rightOn: "ham",
+          byLeft: ["ham"],
+          byRight: ["ham"],
+        })
+        .collectSync();
+      expect(actual.shape).toEqual({ height: 3, width: 5 });
+      actual = df
+        .lazy()
+        .joinAsof(otherDF, { leftOn: "ham", rightOn: "ham", by: ["ham"] })
+        .collectSync();
+      expect(actual.shape).toEqual({ height: 3, width: 5 });
     });
   });
   test("last", () => {
@@ -996,6 +1154,32 @@ describe("lazyframe", () => {
     });
     expect(actual).toFrameEqual(expected);
   });
+  test("sort:nulls_last:false", () => {
+    const actual = pl
+      .DataFrame({
+        foo: [1, null, 2, 3],
+      })
+      .lazy()
+      .sort({ by: "foo", nullsLast: false })
+      .collectSync();
+    const expected = pl.DataFrame({
+      foo: [null, 1, 2, 3],
+    });
+    expect(actual).toFrameEqual(expected);
+  });
+  test("sort:nulls_last:true", () => {
+    const actual = pl
+      .DataFrame({
+        foo: [1, null, 2, 3],
+      })
+      .lazy()
+      .sort({ by: "foo", nullsLast: true })
+      .collectSync();
+    const expected = pl.DataFrame({
+      foo: [1, 2, 3, null],
+    });
+    expect(actual).toFrameEqual(expected);
+  });
   test("sum", () => {
     const actual = pl
       .DataFrame({
@@ -1061,6 +1245,90 @@ describe("lazyframe", () => {
     ]);
     expect(actual).toFrameEqualIgnoringOrder(expected);
   });
+  test("withColumn:series", async () => {
+    const actual: pl.DataFrame = pl
+      .DataFrame()
+      .lazy()
+      .withColumn(pl.Series("series1", [1, 2, 3, 4], pl.Int16))
+      .collectSync();
+    const expected: pl.DataFrame = pl.DataFrame([
+      pl.Series("series1", [1, 2, 3, 4], pl.Int16),
+    ]);
+    expect(actual).toFrameEqual(expected);
+  });
+  test("withColumns:series", async () => {
+    const actual: pl.DataFrame = pl
+      .DataFrame()
+      .lazy()
+      .withColumns(
+        pl.Series("series1", [1, 2, 3, 4], pl.Int16),
+        pl.Series("series2", [1, 2, 3, 4], pl.Int32),
+      )
+      .collectSync();
+    const expected: pl.DataFrame = pl.DataFrame([
+      pl.Series("series1", [1, 2, 3, 4], pl.Int16),
+      pl.Series("series2", [1, 2, 3, 4], pl.Int32),
+    ]);
+    expect(actual).toFrameEqual(expected);
+  });
+  test("select:series", async () => {
+    let actual: pl.DataFrame = pl
+      .DataFrame()
+      .lazy()
+      .select(
+        pl.Series("series1", [1, 2, 3, 4], pl.Int16),
+        pl.Series("series2", [1, 2, 3, 4], pl.Int32),
+      )
+      .collectSync();
+    let expected: pl.DataFrame = pl.DataFrame([
+      pl.Series("series1", [1, 2, 3, 4], pl.Int16),
+      pl.Series("series2", [1, 2, 3, 4], pl.Int32),
+    ]);
+    expect(actual).toFrameEqual(expected);
+    actual = pl
+      .DataFrame({ text: ["hello"] })
+      .lazy()
+      .select(pl.Series("series", [1, 2, 3]))
+      .collectSync();
+
+    expected = pl.DataFrame([pl.Series("series", [1, 2, 3])]);
+    expect(actual).toFrameEqual(expected);
+
+    actual = pl
+      .DataFrame({ text: ["hello"] })
+      .lazy()
+      .select("text", pl.Series("series", [1]))
+      .collectSync();
+    expected = pl.DataFrame({ text: ["hello"], series: [1] });
+    expect(actual).toFrameEqual(expected);
+  });
+  test("select:lit", () => {
+    const df = pl.DataFrame({ a: [1] }, { schema: { a: pl.Float32 } });
+    let actual = df.lazy().select(pl.col("a"), pl.lit(1)).collectSync();
+    const expected = pl.DataFrame({
+      a: [1],
+      literal: [1],
+    });
+    expect(actual).toFrameEqual(expected);
+    actual = df
+      .lazy()
+      .select(pl.col("a").mul(2).alias("b"), pl.lit(2))
+      .collectSync();
+    const expected2 = pl.DataFrame({
+      b: [2],
+      literal: [2],
+    });
+    expect(actual).toFrameEqual(expected2);
+  });
+  test("inspect", () => {
+    const actual = pl
+      .DataFrame({
+        foo: [1, 2, 9],
+        bar: [6, 2, 8],
+      })
+      .lazy();
+    expect(actual).toBeDefined();
+  });
   test("withColumns", () => {
     const actual = pl
       .DataFrame({
@@ -1085,7 +1353,7 @@ describe("lazyframe", () => {
         bar: [6, 2, 8],
       })
       .lazy()
-      .withColumns([pl.lit("a").alias("col_a"), pl.lit("b").alias("col_b")])
+      .withColumns(pl.lit("a").alias("col_a"), pl.lit("b").alias("col_b"))
       .collectSync();
     const expected = pl.DataFrame([
       pl.Series("foo", [1, 2, 9], pl.Int16),
@@ -1111,21 +1379,21 @@ describe("lazyframe", () => {
     ]);
     expect(actual).toFrameEqual(expected);
   });
-  test("withRowCount", () => {
-    const actual = pl
+  test("withRowIndex", () => {
+    const ldf = pl
       .DataFrame({
         foo: [1, 2, 9],
         bar: [6, 2, 8],
       })
-      .lazy()
-      .withRowCount()
-      .collectSync();
+      .lazy();
 
-    const expected = pl.DataFrame([
-      pl.Series("row_nr", [0, 1, 2], pl.UInt32),
-      pl.Series("foo", [1, 2, 9], pl.Int16),
-      pl.Series("bar", [6, 2, 8], pl.Int16),
-    ]);
+    let actual = ldf.withRowIndex().collectSync();
+    let expected = ldf.collectSync();
+    expected.insertAtIdx(0, pl.Series("index", [0, 1, 2], pl.Int16));
+    expect(actual).toFrameEqual(expected);
+    actual = ldf.withRowIndex("idx", 100).collectSync();
+    expected = ldf.collectSync();
+    expected.insertAtIdx(0, pl.Series("idx", [100, 101, 102], pl.Int16));
     expect(actual).toFrameEqual(expected);
   });
   test("tail", () => {
@@ -1223,12 +1491,21 @@ describe("lazyframe", () => {
         { a: 2, b: false },
       ],
     });
-    const actual = pl
+    const ldf = pl
       .DataFrame({
-        json: ['{"a": 1, "b": true}', null, '{"a": 2, "b": false}'],
+        json: [
+          '{"a": 1, "b": true}',
+          '{"a": null, "b": null }',
+          '{"a": 2, "b": false}',
+        ],
       })
-      .lazy()
-      .select(pl.col("json").str.jsonDecode())
+      .lazy();
+    const dtype = pl.Struct([
+      new pl.Field("a", pl.Int64),
+      new pl.Field("b", pl.Bool),
+    ]);
+    const actual = ldf
+      .select(pl.col("json").str.jsonDecode(dtype))
       .collectSync();
     expect(actual).toFrameEqual(expected);
   });
@@ -1239,9 +1516,12 @@ describe("lazyframe", () => {
         pl.Series("bar", ["a", "b", "c"]),
       ])
       .lazy();
-    ldf.sinkCSV("./test.csv");
+    await ldf.sinkCSV("./test.csv").collect();
     const newDF: pl.DataFrame = pl.readCSV("./test.csv");
-    const actualDf: pl.DataFrame = await ldf.collect();
+    const actualDf: pl.DataFrame = await ldf.collect({
+      streaming: true,
+      noOptimization: true,
+    });
     expect(newDF.sort("foo")).toFrameEqual(actualDf);
     fs.rmSync("./test.csv");
   });
@@ -1252,7 +1532,7 @@ describe("lazyframe", () => {
         pl.Series("column_2", ["a", "b", "c"]),
       ])
       .lazy();
-    ldf.sinkCSV("./test.csv", { includeHeader: false });
+    await ldf.sinkCSV("./test.csv", { includeHeader: false }).collect();
     const newDF: pl.DataFrame = pl.readCSV("./test.csv", { hasHeader: false });
     const actualDf: pl.DataFrame = await ldf.collect();
     expect(newDF.sort("column_1")).toFrameEqual(actualDf);
@@ -1265,7 +1545,7 @@ describe("lazyframe", () => {
         pl.Series("bar", ["a", "b", "c"]),
       ])
       .lazy();
-    ldf.sinkCSV("./test.csv", { separator: "|" });
+    await ldf.sinkCSV("./test.csv", { separator: "|" }).collect();
     const newDF: pl.DataFrame = pl.readCSV("./test.csv", { sep: "|" });
     const actualDf: pl.DataFrame = await ldf.collect();
     expect(newDF.sort("foo")).toFrameEqual(actualDf);
@@ -1278,7 +1558,7 @@ describe("lazyframe", () => {
         pl.Series("bar", ["a", "b", null]),
       ])
       .lazy();
-    ldf.sinkCSV("./test.csv", { nullValue: "BOOM" });
+    await ldf.sinkCSV("./test.csv", { nullValue: "BOOM" }).collect();
     const newDF: pl.DataFrame = pl.readCSV("./test.csv", { sep: "," });
     const actualDf: pl.DataFrame = await (await ldf.collect()).withColumn(
       pl.col("bar").fillNull("BOOM"),
@@ -1293,7 +1573,7 @@ describe("lazyframe", () => {
         pl.Series("bar", ["a", "b", "c"]),
       ])
       .lazy();
-    ldf.sinkParquet("./test.parquet");
+    await ldf.sinkParquet("./test.parquet").collect();
     const newDF: pl.DataFrame = pl.readParquet("./test.parquet");
     const actualDf: pl.DataFrame = await ldf.collect();
     expect(newDF.sort("foo")).toFrameEqual(actualDf);
@@ -1306,10 +1586,80 @@ describe("lazyframe", () => {
         pl.Series("bar", ["a", "b", "c"]),
       ])
       .lazy();
-    ldf.sinkParquet("./test.parquet", { compression: "gzip" });
+    await ldf.sinkParquet("./test.parquet", { compression: "gzip" }).collect();
     const newDF: pl.DataFrame = pl.readParquet("./test.parquet");
     const actualDf: pl.DataFrame = await ldf.collect();
     expect(newDF.sort("foo")).toFrameEqual(actualDf);
     fs.rmSync("./test.parquet");
+  });
+  test("sinkNdJson:path", async () => {
+    const ldf = pl
+      .DataFrame([
+        pl.Series("foo", [1, 2, 3], pl.Int64),
+        pl.Series("bar", ["a", "b", "c"]),
+      ])
+      .lazy();
+    await ldf.sinkNdJson("./test.ndjson").collect();
+    let df = pl.scanJson("./test.ndjson").collectSync();
+    expect(df.shape).toEqual({ height: 3, width: 2 });
+
+    await ldf
+      .sinkNdJson("./test.ndjson", {
+        retries: 1,
+        syncOnClose: "all",
+        maintainOrder: false,
+      })
+      .collect();
+    df = pl.scanJson("./test.ndjson").collectSync();
+    expect(df.shape).toEqual({ height: 3, width: 2 });
+
+    fs.rmSync("./test.ndjson");
+  });
+  test("sinkIpc:path", async () => {
+    const ldf = pl
+      .DataFrame([
+        pl.Series("foo", [1, 2, 3], pl.Int64),
+        pl.Series("bar", ["a", "b", "c"]),
+      ])
+      .lazy();
+    await ldf.sinkIpc("./test.ipc").collect();
+    let df = pl.scanIPC("./test.ipc").collectSync();
+    expect(df.shape).toEqual({ height: 3, width: 2 });
+
+    await ldf
+      .sinkIpc("./test.ipc", {
+        retries: 1,
+        syncOnClose: "all",
+        maintainOrder: false,
+        compression: "lz4",
+      })
+      .collect();
+    df = pl.scanIPC("./test.ipc").collectSync();
+    expect(df.shape).toEqual({ height: 3, width: 2 });
+    fs.rmSync("./test.ipc");
+  });
+  test("unpivot renamed", () => {
+    const ldf = pl
+      .DataFrame({
+        id: [1],
+        asset_key_1: ["123"],
+        asset_key_2: ["456"],
+        asset_key_3: ["abc"],
+      })
+      .lazy();
+    const actual = ldf.unpivot(
+      "id",
+      ["asset_key_1", "asset_key_2", "asset_key_3"],
+      {
+        variableName: "foo",
+        valueName: "bar",
+      },
+    );
+    const expected = pl.DataFrame({
+      id: [1, 1, 1],
+      foo: ["asset_key_1", "asset_key_2", "asset_key_3"],
+      bar: ["123", "456", "abc"],
+    });
+    expect(actual.collectSync()).toFrameEqual(expected);
   });
 });

@@ -1,8 +1,9 @@
 use crate::dataframe::JsDataFrame;
 use crate::prelude::*;
-use crate::utils::reinterpret;
 use polars_core::series::ops::NullBehavior;
 use polars_core::utils::CustomIterTools;
+use polars_utils::aliases::PlFixedStateQuality;
+use std::hash::BuildHasher;
 
 #[napi]
 #[repr(transparent)]
@@ -22,20 +23,26 @@ impl From<Series> for JsSeries {
     }
 }
 
+fn bin_config() -> bincode::config::Configuration {
+    bincode::config::standard()
+        .with_no_limit()
+        .with_variable_int_encoding()
+}
+
 #[napi]
 impl JsSeries {
     #[napi(catch_unwind)]
-    pub fn to_js(&self, env: Env) -> napi::Result<napi::JsUnknown> {
+    pub fn to_js(&'_ self, env: Env) -> napi::Result<napi::Unknown<'_>> {
         env.to_js_value(&self.series)
     }
 
     #[napi(catch_unwind)]
     pub fn serialize(&self, format: String) -> napi::Result<Buffer> {
         let buf = match format.as_ref() {
-            "bincode" => bincode::serialize(&self.series)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+            "bincode" => bincode::serde::encode_to_vec(&self.series, bin_config())
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             "json" => serde_json::to_vec(&self.series)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             _ => {
                 return Err(napi::Error::from_reason(
                     "unexpected format. \n supported options are 'json', 'bincode'".to_owned(),
@@ -48,10 +55,14 @@ impl JsSeries {
     #[napi(factory, catch_unwind)]
     pub fn deserialize(buf: Buffer, format: String) -> napi::Result<JsSeries> {
         let series: Series = match format.as_ref() {
-            "bincode" => bincode::deserialize(&buf)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+            "bincode" => {
+                bincode::serde::decode_from_slice(&buf, bin_config())
+                    .map_err(|err| napi::Error::from_reason(err.to_string()))
+                    .unwrap()
+                    .0
+            }
             "json" => serde_json::from_slice(&buf)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             _ => {
                 return Err(napi::Error::from_reason(
                     "unexpected format. \n supported options are 'json', 'bincode'".to_owned(),
@@ -65,112 +76,113 @@ impl JsSeries {
     //
     #[napi(factory, catch_unwind)]
     pub fn new_int_8_array(name: String, arr: Int8Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_uint8_array(name: String, arr: Uint8Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_uint8_clamped_array(name: String, arr: Uint8ClampedArray) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_int16_array(name: String, arr: Int16Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_uint16_array(name: String, arr: Uint16Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_int32_array(name: String, arr: Int32Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_uint32_array(name: String, arr: Uint32Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_float32_array(name: String, arr: Float32Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_float64_array(name: String, arr: Float64Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_bigint64_array(name: String, arr: BigInt64Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_biguint64_array(name: String, arr: BigUint64Array) -> JsSeries {
-        Series::new(&name, arr).into()
+        Series::new(PlSmallStr::from_string(name), arr).into()
     }
     #[napi(factory, catch_unwind)]
     pub fn new_opt_str(name: String, val: Wrap<StringChunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_bool(name: String, val: Wrap<BooleanChunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_bool(name: String, val: Wrap<BooleanChunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_i32(name: String, val: Wrap<Int32Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_i32(name: String, val: Wrap<Int32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_i64(name: String, val: Wrap<Int64Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_i64(name: String, val: Wrap<Int64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_u64(name: String, val: Wrap<UInt64Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_u64(name: String, val: Wrap<UInt64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_u32(name: String, val: Wrap<UInt32Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_u32(name: String, val: Wrap<UInt32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_f32(name: String, val: Wrap<Float32Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_f32(name: String, val: Wrap<Float32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
 
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_f64(name: String, val: Wrap<Float64Chunked>, _strict: bool) -> JsSeries {
+    pub fn new_opt_f64(name: String, val: Wrap<Float64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
-        s.rename(&name);
+        s.rename(PlSmallStr::from_string(name));
         JsSeries::new(s)
     }
 
     #[napi(factory, catch_unwind)]
     pub fn new_opt_date(
         name: String,
-        values: Vec<napi::JsUnknown>,
+        values: Vec<napi::Unknown>,
         strict: Option<bool>,
     ) -> napi::Result<JsSeries> {
         let len = values.len();
-        let mut builder = PrimitiveChunkedBuilder::<Int64Type>::new(&name, len);
+        let mut builder =
+            PrimitiveChunkedBuilder::<Int64Type>::new(PlSmallStr::from_string(name), len);
         for item in values.into_iter() {
             match item.get_type()? {
                 ValueType::Object => {
-                    let obj: &napi::JsObject = unsafe { &item.cast() };
+                    let obj: &Object = unsafe { &item.cast()? };
                     if obj.is_date()? {
-                        let d: &napi::JsDate = unsafe { &item.cast() };
+                        let d: &napi::JsDate = unsafe { &item.cast()? };
                         match d.value_of() {
                             Ok(v) => builder.append_value(v as i64),
                             Err(e) => {
@@ -194,6 +206,26 @@ impl JsSeries {
             .into_series()
             .into())
     }
+
+    #[napi(factory, catch_unwind)]
+    pub fn new_any_value(
+        name: String,
+        values: Vec<Wrap<AnyValue>>,
+        dtype: Wrap<DataType>,
+    ) -> napi::Result<JsSeries> {
+        let values = values.into_iter().map(|v| v.0).collect::<Vec<_>>();
+
+        let s = Series::from_any_values_and_dtype(
+            PlSmallStr::from_string(name),
+            &values,
+            &dtype.0,
+            false,
+        )
+        .map_err(JsPolarsErr::from)?;
+
+        Ok(s.into())
+    }
+
     #[napi(factory, catch_unwind)]
     pub fn new_list(name: String, values: Array, dtype: Wrap<DataType>) -> napi::Result<JsSeries> {
         use crate::list_construction::js_arr_to_list;
@@ -213,7 +245,7 @@ impl JsSeries {
                 if let AnyValue::StringOwned(v) = val.0 {
                     let val = v.to_string();
                     let mut ca: StringChunked = (0..n).map(|_| val.clone()).collect_trusted();
-                    ca.rename(&name);
+                    ca.rename(PlSmallStr::from_string(name));
                     ca.into_series().into()
                 } else {
                     return Err(napi::Error::from_reason(
@@ -224,7 +256,7 @@ impl JsSeries {
             DataType::Int64 => {
                 if let AnyValue::Int64(v) = val.0 {
                     let mut ca: NoNull<Int64Chunked> = (0..n).map(|_| v).collect_trusted();
-                    ca.rename(&name);
+                    ca.rename(PlSmallStr::from_string(name));
 
                     ca.into_inner().into_series().into()
                 } else {
@@ -236,7 +268,7 @@ impl JsSeries {
             DataType::Float64 => {
                 if let AnyValue::Float64(v) = val.0 {
                     let mut ca: NoNull<Float64Chunked> = (0..n).map(|_| v).collect_trusted();
-                    ca.rename(&name);
+                    ca.rename(PlSmallStr::from_string(name));
                     ca.into_inner().into_series().into()
                 } else {
                     return Err(napi::Error::from_reason(
@@ -272,7 +304,7 @@ impl JsSeries {
     }
     #[napi(getter, catch_unwind)]
     pub fn name(&self) -> String {
-        self.series.name().to_owned()
+        self.series.name().to_string()
     }
     #[napi(catch_unwind)]
     pub fn to_string(&self) -> String {
@@ -313,31 +345,22 @@ impl JsSeries {
         }
     }
     #[napi(catch_unwind)]
-    pub fn get_idx(&self, idx: i64) -> Wrap<AnyValue> {
+    pub fn get_idx(&self, idx: i64) -> Wrap<AnyValue<'_>> {
         Wrap(self.series.get(idx as usize).unwrap())
     }
     #[napi(catch_unwind)]
     pub fn bitand(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitand(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series & &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
     pub fn bitor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitor(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series | &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
     pub fn bitxor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let out = self
-            .series
-            .bitxor(&other.series)
-            .map_err(JsPolarsErr::from)?;
+        let out = (&self.series ^ &other.series).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
     #[napi(catch_unwind)]
@@ -369,13 +392,18 @@ impl JsSeries {
             .into())
     }
     #[napi(catch_unwind)]
+    pub fn product(&self) -> Result<JsAnyValue> {
+        let scalar = self.series.product().map_err(JsPolarsErr::from)?;
+        Ok(scalar.value().clone().into())
+    }
+    #[napi(catch_unwind)]
     pub fn chunk_lengths(&self) -> Vec<u32> {
         self.series.chunk_lengths().map(|i| i as u32).collect()
     }
 
     #[napi(catch_unwind)]
     pub fn rename(&mut self, name: String) {
-        self.series.rename(&name);
+        self.series.rename(PlSmallStr::from_string(name));
     }
 
     #[napi(catch_unwind)]
@@ -461,24 +489,29 @@ impl JsSeries {
         }
     }
     #[napi(catch_unwind)]
-    pub fn add(&self, other: &JsSeries) -> JsSeries {
-        (&self.series + &other.series).into()
+    pub fn add(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+        let series = (&self.series + &other.series).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries { series })
     }
     #[napi(catch_unwind)]
-    pub fn sub(&self, other: &JsSeries) -> JsSeries {
-        (&self.series - &other.series).into()
+    pub fn sub(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+        let series = (&self.series - &other.series).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries { series })
     }
     #[napi(catch_unwind)]
-    pub fn mul(&self, other: &JsSeries) -> JsSeries {
-        (&self.series * &other.series).into()
+    pub fn mul(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+        let series = (&self.series * &other.series).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries { series })
     }
     #[napi(catch_unwind)]
-    pub fn div(&self, other: &JsSeries) -> JsSeries {
-        (&self.series / &other.series).into()
+    pub fn div(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+        let series = (&self.series / &other.series).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries { series })
     }
     #[napi(catch_unwind)]
-    pub fn rem(&self, other: &JsSeries) -> JsSeries {
-        (&self.series % &other.series).into()
+    pub fn rem(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+        let series = (&self.series % &other.series).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries { series })
     }
     #[napi(catch_unwind)]
     pub fn head(&self, length: Option<i64>) -> JsSeries {
@@ -490,24 +523,33 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub unsafe fn sort(&mut self, descending: bool, nulls_last: bool) -> Self {
-        self.series.sort(descending, nulls_last).into()
+    pub unsafe fn sort(&mut self, descending: bool, nulls_last: bool) -> napi::Result<JsSeries> {
+        let sorted: Series = self
+            .series
+            .sort(
+                SortOptions::default()
+                    .with_order_descending(descending)
+                    .with_nulls_last(nulls_last),
+            )
+            .map_err(JsPolarsErr::from)?;
+        Ok(sorted.into())
     }
 
     #[napi]
     pub fn argsort(
         &self,
-        reverse: bool,
+        descending: bool,
         nulls_last: bool,
         multithreaded: bool,
         maintain_order: bool,
     ) -> JsSeries {
         self.series
             .arg_sort(SortOptions {
-                descending: reverse,
+                descending,
                 nulls_last,
                 multithreaded,
                 maintain_order,
+                limit: None,
             })
             .into_series()
             .into()
@@ -523,10 +565,16 @@ impl JsSeries {
         Ok(unique.into())
     }
     #[napi(catch_unwind)]
-    pub fn value_counts(&self, sorted: bool) -> napi::Result<JsDataFrame> {
+    pub fn value_counts(
+        &self,
+        sort: bool,
+        parallel: bool,
+        name: String,
+        normalize: bool,
+    ) -> napi::Result<JsDataFrame> {
         let df = self
             .series
-            .value_counts(true, sorted)
+            .value_counts(sort, parallel, PlSmallStr::from_string(name), normalize)
             .map_err(JsPolarsErr::from)?;
         Ok(df.into())
     }
@@ -546,7 +594,7 @@ impl JsSeries {
     }
     #[napi(catch_unwind)]
     pub fn take(&self, indices: Vec<u32>) -> napi::Result<JsSeries> {
-        let indices = UInt32Chunked::from_vec("", indices);
+        let indices = UInt32Chunked::from_vec(PlSmallStr::EMPTY, indices);
         let take = self.series.take(&indices).map_err(JsPolarsErr::from)?;
         Ok(JsSeries::new(take))
     }
@@ -563,8 +611,8 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn has_validity(&self) -> bool {
-        self.series.has_validity()
+    pub fn has_nulls(&self) -> bool {
+        self.series.has_nulls()
     }
 
     #[napi(catch_unwind)]
@@ -600,7 +648,11 @@ impl JsSeries {
         let ca = self.series.is_infinite().map_err(JsPolarsErr::from)?;
         Ok(ca.into_series().into())
     }
-
+    #[napi(catch_unwind)]
+    pub fn implode(&self) -> napi::Result<JsSeries> {
+        let ca = self.series.implode().map_err(JsPolarsErr::from)?;
+        Ok(ca.into_series().into())
+    }
     #[napi(catch_unwind)]
     pub fn is_unique(&self) -> napi::Result<JsSeries> {
         let ca = is_unique(&self.series).map_err(JsPolarsErr::from)?;
@@ -649,13 +701,20 @@ impl JsSeries {
     }
     #[napi(catch_unwind)]
     pub fn explode(&self) -> napi::Result<JsSeries> {
-        let s = self.series.explode().map_err(JsPolarsErr::from)?;
+        let options = ExplodeOptions {
+            empty_as_null: true,
+            keep_nulls: true,
+        };
+        let s = self.series.explode(options).map_err(JsPolarsErr::from)?;
         Ok(s.into())
     }
     #[napi(catch_unwind)]
-    pub fn gather_every(&self, n: i64, offset: i64) -> JsSeries {
-        let s = self.series.gather_every(n as usize, offset as usize);
-        s.into()
+    pub fn gather_every(&self, n: i64, offset: i64) -> napi::Result<JsSeries> {
+        let s = self
+            .series
+            .gather_every(n as usize, offset as usize)
+            .map_err(JsPolarsErr::from)?;
+        Ok(s.into())
     }
     #[napi(catch_unwind)]
     pub fn series_equal(&self, other: &JsSeries, null_equal: bool, strict: bool) -> bool {
@@ -767,16 +826,12 @@ impl JsSeries {
         }
     }
     #[napi(catch_unwind)]
-    pub fn quantile(
-        &self,
-        quantile: f64,
-        interpolation: Wrap<QuantileInterpolOptions>,
-    ) -> JsAnyValue {
+    pub fn quantile(&self, quantile: f64, interpolation: Wrap<QuantileMethod>) -> JsAnyValue {
         let binding = self
             .series
-            .quantile_as_series(quantile, interpolation.0)
+            .quantile_reduce(quantile, interpolation.0)
             .expect("invalid quantile");
-        let v = binding.get(0).unwrap_or(AnyValue::Null);
+        let v = binding.as_any_value();
         v.into()
     }
     /// Rechunk and return a pointer to the start of the Series.
@@ -801,10 +856,14 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn is_in(&self, other: &JsSeries) -> napi::Result<JsSeries> {
-        let series = is_in(&self.series, &other.series)
-            .map(|ca| ca.into_series())
-            .map_err(JsPolarsErr::from)?;
+    pub fn is_in(&self, other: &JsSeries, nulls_equal: bool) -> napi::Result<JsSeries> {
+        let series = is_in(
+            &self.series,
+            &other.series.implode().unwrap().into_series(),
+            nulls_equal,
+        )
+        .map(|ca| ca.into_series())
+        .map_err(JsPolarsErr::from)?;
 
         Ok(JsSeries::new(series))
     }
@@ -833,14 +892,18 @@ impl JsSeries {
     #[napi(catch_unwind)]
     pub fn struct_to_frame(&self) -> napi::Result<crate::dataframe::JsDataFrame> {
         let ca = self.series.struct_().map_err(JsPolarsErr::from)?;
-        let df: DataFrame = ca.clone().into();
+        let df: DataFrame = ca.clone().unnest();
         Ok(df.into())
     }
 
     #[napi(catch_unwind)]
     pub fn struct_fields(&self) -> napi::Result<Vec<&str>> {
         let ca = self.series.struct_().map_err(JsPolarsErr::from)?;
-        Ok(ca.fields().iter().map(|s| s.name()).collect())
+        Ok(ca
+            .struct_fields()
+            .iter()
+            .map(|s| s.name().as_str())
+            .collect())
     }
     // String Namespace
 
@@ -878,10 +941,10 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn str_json_path_match(&self, pat: String) -> napi::Result<JsSeries> {
+    pub fn str_json_path_match(&self, pat: Wrap<StringChunked>) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
-            .json_path_match(&pat)
+            .json_path_match(&pat.0)
             .map_err(JsPolarsErr::from)?
             .into_series();
         Ok(s.into())
@@ -952,22 +1015,25 @@ impl JsSeries {
         Ok(s.into())
     }
     #[napi(catch_unwind)]
-    pub fn str_pad_start(&self, length: i64, fill_char: String) -> napi::Result<JsSeries> {
+    pub fn str_pad_start(&self, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
+        let vec_ulen = length.into_iter().map(|x| x as u64).collect();
+        let chunked_len = UInt64Chunked::from_vec("str_pad_start_length".into(), vec_ulen);
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
-            .pad_start(length as usize, fill_char.chars().nth(0).unwrap())
+            .pad_start(&chunked_len, fill_char.chars().nth(0).unwrap())
             .into_series();
         Ok(s.into())
     }
     #[napi(catch_unwind)]
-    pub fn str_pad_end(&self, length: i64, fill_char: String) -> napi::Result<JsSeries> {
+    pub fn str_pad_end(&self, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
+        let vec_ulen = length.into_iter().map(|x| x as u64).collect();
+        let chunked_len = UInt64Chunked::from_vec("str_pad_start_length".into(), vec_ulen);
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
-            .pad_end(length as usize, fill_char.chars().nth(0).unwrap())
+            .pad_end(&chunked_len, fill_char.chars().nth(0).unwrap())
             .into_series();
         Ok(s.into())
     }
-
     #[napi(catch_unwind)]
     pub fn strftime(&self, fmt: String) -> napi::Result<JsSeries> {
         let s = self.series.strftime(&fmt).map_err(JsPolarsErr::from)?;
@@ -985,12 +1051,18 @@ impl JsSeries {
     //   Ok(ca.into_series().into())
     // }
     #[napi(catch_unwind)]
-    pub fn to_dummies(&self) -> napi::Result<JsSeries> {
-        todo!()
-        // let df = self.series.to_dummies().map_err(JsPolarsErr::from)?;
-        // Ok(df.into())
+    pub fn to_dummies(
+        &self,
+        separator: Option<String>,
+        drop_first: bool,
+        drop_nulls: bool,
+    ) -> napi::Result<JsDataFrame> {
+        let df = self
+            .series
+            .to_dummies(separator.as_deref(), drop_first, drop_nulls)
+            .map_err(JsPolarsErr::from)?;
+        Ok(df.into())
     }
-
     #[napi(catch_unwind)]
     pub fn get_list(&self, index: i64) -> Option<JsSeries> {
         if let Ok(ca) = &self.series.list() {
@@ -1072,8 +1144,11 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn round(&self, decimals: u32) -> napi::Result<JsSeries> {
-        let s = self.series.round(decimals).map_err(JsPolarsErr::from)?;
+    pub fn round(&self, decimals: u32, mode: Wrap<RoundMode>) -> napi::Result<JsSeries> {
+        let s = self
+            .series
+            .round(decimals, mode.0)
+            .map_err(JsPolarsErr::from)?;
         Ok(s.into())
     }
 
@@ -1101,7 +1176,8 @@ impl JsSeries {
 
     #[napi(catch_unwind)]
     pub fn hash(&self, k0: Wrap<u64>, k1: Wrap<u64>, k2: Wrap<u64>, k3: Wrap<u64>) -> JsSeries {
-        let hb = polars::export::ahash::RandomState::with_seeds(k0.0, k1.0, k2.0, k3.0);
+        let seed = PlFixedStateQuality::default().hash_one((k0.0, k1.0, k2.0, k3.0));
+        let hb = PlSeedableRandomStateQuality::seed_from_u64(seed);
         self.series.hash(hb).into_series().into()
     }
     #[napi(catch_unwind)]
@@ -1112,7 +1188,7 @@ impl JsSeries {
 
     #[napi(catch_unwind)]
     pub fn mode(&self) -> napi::Result<JsSeries> {
-        let s = mode::mode(&self.series).map_err(JsPolarsErr::from)?;
+        let s = mode::mode(&self.series, false).map_err(JsPolarsErr::from)?;
         Ok(s.into())
     }
 
@@ -1175,7 +1251,11 @@ impl JsSeries {
 
     #[napi(catch_unwind)]
     pub fn reshape(&self, dims: Vec<i64>) -> napi::Result<JsSeries> {
-        let out = self.series.reshape(&dims).map_err(JsPolarsErr::from)?;
+        let dims = dims
+            .into_iter()
+            .map(ReshapeDimension::new)
+            .collect::<Vec<_>>();
+        let out = self.series.reshape_list(&dims).map_err(JsPolarsErr::from)?;
         Ok(out.into())
     }
 
@@ -1218,7 +1298,7 @@ impl JsSeries {
                 self.series = out;
                 Ok(())
             }
-            Err(e) => Err(napi::Error::from_reason(format!("{:?}", e))),
+            Err(e) => Err(napi::Error::from_reason(e.to_string())),
         }
     }
 }
@@ -1262,7 +1342,7 @@ macro_rules! impl_set_with_mask {
     };
 }
 
-impl_set_with_mask!(series_set_with_mask_str, &str, str);
+// impl_set_with_mask!(series_set_with_mask_str, String, str);
 impl_set_with_mask!(series_set_with_mask_f64, f64, f64);
 impl_set_with_mask_wrap!(series_set_with_mask_f32, f32, f32);
 impl_set_with_mask_wrap!(series_set_with_mask_u8, u8, u8);
@@ -1302,24 +1382,11 @@ impl_get!(series_get_i8, i8, i8, i32);
 impl_get!(series_get_i16, i16, i16, i32);
 impl_get!(series_get_i32, i32, i32, i32);
 impl_get!(series_get_i64, i64, i64, i32);
-// impl_get!(series_get_str, utf8, &str);
-impl_get!(series_get_date, date, i32, i32);
-impl_get!(series_get_datetime, datetime, i64, i64);
-impl_get!(series_get_duration, duration, i64, i64);
+impl_get!(series_get_str, str, utf8, &str);
+// impl_get!(series_get_date, date, i32, i32);
+// impl_get!(series_get_datetime, datetime, i64, i64);
+// impl_get!(series_get_duration, duration, i64, i64);
 
-#[napi(catch_unwind)]
-pub fn series_get_str(s: &JsSeries, index: i64) -> Option<String> {
-    if let Ok(ca) = s.series.str() {
-        let index = if index < 0 {
-            (ca.len() as i64 + index) as usize
-        } else {
-            index as usize
-        };
-        ca.get(index).map(|s| s.to_owned())
-    } else {
-        None
-    }
-}
 macro_rules! impl_arithmetic {
   ($name:ident, $type:ty, $operand:tt) => {
       #[napi(catch_unwind)]

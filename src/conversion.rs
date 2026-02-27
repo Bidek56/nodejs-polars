@@ -1,15 +1,16 @@
 use crate::lazy::dsl::JsExpr;
 use crate::prelude::*;
 use napi::bindgen_prelude::*;
-use napi::{JsBigInt, JsBoolean, JsDate, JsNumber, JsObject, JsString, JsUnknown};
-use polars::frame::NullStrategy;
-use polars::prelude::*;
+use polars_arrow::temporal_conversions::time64ns_to_time;
+use polars_core::config::verbose_print_sensitive;
 use polars_core::series::ops::NullBehavior;
+use polars_io::cloud::{CloudOptions, CloudRetryConfig};
+use polars_io::utils::sync_on_close::SyncOnCloseType;
 use polars_io::RowIndex;
-use std::any::Any;
+use polars_utils::compression::{BrotliLevel, GzipLevel, ZstdLevel};
+use polars_utils::total_ord::TotalOrdWrap;
 use std::collections::HashMap;
-
-use smartstring::alias::String as SmartString;
+use std::num::NonZero;
 
 #[derive(Debug)]
 pub struct Wrap<T: ?Sized>(pub T);
@@ -39,37 +40,38 @@ impl TypeName for Wrap<StringChunked> {
 /// Safety.
 /// it is up to the consumer to make sure the item is valid
 pub(crate) trait ToSeries {
-    unsafe fn to_series(&self) -> Series;
+    fn to_series(&self, name: &str) -> Series;
 }
 
-impl ToSeries for Array {
-    unsafe fn to_series(&self) -> Series {
+impl ToSeries for Array<'_> {
+    fn to_series(&self, name: &str) -> Series {
         let len = self.len();
         let mut v: Vec<AnyValue> = Vec::with_capacity(len as usize);
         for i in 0..len {
             let av: Wrap<AnyValue> = self.get(i).unwrap().unwrap_or(Wrap(AnyValue::Null));
             v.push(av.0);
         }
-        Series::new("", v)
+        Series::new(name.into(), v)
     }
 }
 
-impl ToSeries for JsUnknown {
-    unsafe fn to_series(&self) -> Series {
-        let obj = self.cast::<JsObject>();
-        let len = obj.get_array_length_unchecked().unwrap();
+impl ToSeries for Unknown<'_> {
+    fn to_series(&self, name: &str) -> Series {
+        let obj = unsafe { self.cast::<Object>() };
+        let len = obj.as_ref().unwrap().get_array_length_unchecked().unwrap();
         let mut v: Vec<AnyValue> = Vec::with_capacity(len as usize);
         for i in 0..len {
-            let unknown: JsUnknown = obj.get_element_unchecked(i).unwrap();
+            let unknown: Unknown = obj.as_ref().unwrap().clone().get_element(i).unwrap();
             let av = AnyValue::from_js(unknown).unwrap();
             v.push(av);
         }
-        Series::new("", v)
+        Series::new(name.into(), v)
     }
 }
+
 impl ToNapiValue for Wrap<&Series> {
     unsafe fn to_napi_value(napi_env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
-        let s = val.0;
+        let s = val.0.rechunk();
         let len = s.len();
         let dtype = s.dtype();
         let env = Env::from_raw(napi_env);
@@ -77,12 +79,14 @@ impl ToNapiValue for Wrap<&Series> {
         match dtype {
             DataType::Struct(_) => {
                 let ca = s.struct_().map_err(JsPolarsErr::from)?;
-                let df: DataFrame = ca.clone().into();
+                let df: DataFrame = ca.clone().unnest();
+
                 let (height, _) = df.shape();
                 let mut rows = env.create_array(height as u32)?;
+
                 for idx in 0..height {
-                    let mut row = env.create_object()?;
-                    for col in df.get_columns() {
+                    let mut row = Object::new(&env)?;
+                    for col in df.columns() {
                         let key = col.name();
                         let val = col.get(idx);
                         row.set(key, Wrap(val.unwrap()))?;
@@ -93,6 +97,7 @@ impl ToNapiValue for Wrap<&Series> {
             }
             _ => {
                 let mut arr = env.create_array(len as u32)?;
+
                 for (idx, val) in s.iter().enumerate() {
                     arr.set(idx as u32, Wrap(val))?;
                 }
@@ -101,22 +106,24 @@ impl ToNapiValue for Wrap<&Series> {
         }
     }
 }
+
 impl<'a> ToNapiValue for Wrap<AnyValue<'a>> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         match val.0 {
-            AnyValue::Null => {
-                napi::bindgen_prelude::Null::to_napi_value(env, napi::bindgen_prelude::Null)
-            }
+            AnyValue::Null => napi::bindgen_prelude::Null::to_napi_value(env, napi::bindgen_prelude::Null),
             AnyValue::Boolean(b) => bool::to_napi_value(env, b),
             AnyValue::Int8(n) => i32::to_napi_value(env, n as i32),
             AnyValue::Int16(n) => i32::to_napi_value(env, n as i32),
             AnyValue::Int32(n) => i32::to_napi_value(env, n),
             AnyValue::Int64(n) => i64::to_napi_value(env, n),
+            AnyValue::Int128(n) => i128::to_napi_value(env, n),
             AnyValue::UInt8(n) => u32::to_napi_value(env, n as u32),
             AnyValue::UInt16(n) => u32::to_napi_value(env, n as u32),
             AnyValue::UInt32(n) => u32::to_napi_value(env, n),
             AnyValue::UInt64(n) => u64::to_napi_value(env, n),
-            AnyValue::Float32(n) => f64::to_napi_value(env, n as f64),
+            AnyValue::UInt128(n) => u128::to_napi_value(env, n),
+            AnyValue::Float16(n) => f64::to_napi_value(env, f64::from(n)),
+            AnyValue::Float32(n) => f64::to_napi_value(env, f64::from(n)),
             AnyValue::Float64(n) => f64::to_napi_value(env, n),
             AnyValue::String(s) => String::to_napi_value(env, s.to_owned()),
             AnyValue::StringOwned(s) => String::to_napi_value(env, s.to_string()),
@@ -130,37 +137,52 @@ impl<'a> ToNapiValue for Wrap<AnyValue<'a>> {
                     napi::sys::napi_create_date(env, epoch_time, &mut ptr),
                     "Failed to convert rust type `AnyValue::Date` into napi value",
                 )?;
-
                 Ok(ptr)
             }
-            AnyValue::Datetime(v, _, _) => {
-                let mut js_value = std::ptr::null_mut();
-                napi::sys::napi_create_date(env, v as f64, &mut js_value);
+            AnyValue::Datetime(v, time_unit, _) | AnyValue::DatetimeOwned(v, time_unit, _)  => {
+                let mut ptr = std::ptr::null_mut();
 
-                Ok(js_value)
-            }
-            AnyValue::Categorical(idx, rev, arr) => {
-                let s = if arr.is_null() {
-                    rev.get(idx)
-                } else {
-                    arr.deref_unchecked().value(idx as usize)
+                let div = match time_unit {
+                    TimeUnit::Milliseconds => 1.0,
+                    TimeUnit::Microseconds => 1_000.0,
+                    TimeUnit::Nanoseconds => 1_000_000.0,
                 };
+
+                // Value representing the number of milliseconds since January 1, 1970, 00:00:00 UTC.
+                let epoch_time: f64 = (v as f64) / div;
+                check_status!(
+                    napi::sys::napi_create_date(env, epoch_time, &mut ptr),
+                    "Failed to convert rust type `AnyValue::Date` into napi value",
+                )?;
+                Ok(ptr)
+            }
+            AnyValue::Categorical(cat, &ref lmap) | AnyValue::CategoricalOwned(cat, ref lmap) => {
+                let s = unsafe { lmap.cat_to_str_unchecked(cat) };
                 let ptr = String::to_napi_value(env, s.to_string());
                 Ok(ptr.unwrap())
-            }
+            },
             AnyValue::Duration(v, _) => i64::to_napi_value(env, v),
-            AnyValue::Time(v) => i64::to_napi_value(env, v),
+            AnyValue::Time(v) => String::to_napi_value(env, time64ns_to_time(v).format("%T%.f").to_string()),
             AnyValue::List(ser) => Wrap::<&Series>::to_napi_value(env, Wrap(&ser)),
             ref av @ AnyValue::Struct(_, _, flds) => struct_dict(env, av._iter_struct_av(), flds),
-            _ => todo!(),
+            AnyValue::Array(ser, _) => Wrap::<&Series>::to_napi_value(env, Wrap(&ser)),
+            AnyValue::Enum(_, _) => Err(napi::Error::from_reason("Enum is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::Object(_) => Err(napi::Error::from_reason("Object is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::ObjectOwned(_) => Err(napi::Error::from_reason("ObjectOwned is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::StructOwned(_) => Err(napi::Error::from_reason("StructOwned is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::Binary(_) => Err(napi::Error::from_reason("Binary is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::BinaryOwned(_) => Err(napi::Error::from_reason("BinaryOwned is not a supported, please convert to string or number before collecting to js")),
+            AnyValue::Decimal(_,_,_) => Err(napi::Error::from_reason("Decimal is not a supported type in javascript, please convert to string or number before collecting to js")),
+            AnyValue::EnumOwned(_,_) => Err(napi::Error::from_reason("EnumOwned is not a supported, please convert to string or number before collecting to js")),
         }
     }
 }
+
 impl FromNapiValue for Wrap<StringChunked> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         let arr = Array::from_napi_value(env, napi_val)?;
         let len = arr.len() as usize;
-        let mut builder = StringChunkedBuilder::new("", len);
+        let mut builder = StringChunkedBuilder::new(PlSmallStr::EMPTY, len);
         for i in 0..len {
             match arr.get::<String>(i as u32) {
                 Ok(val) => match val {
@@ -178,7 +200,7 @@ impl FromNapiValue for Wrap<BooleanChunked> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         let arr = Array::from_napi_value(env, napi_val)?;
         let len = arr.len() as usize;
-        let mut builder = BooleanChunkedBuilder::new("", len);
+        let mut builder = BooleanChunkedBuilder::new(PlSmallStr::EMPTY, len);
         for i in 0..len {
             match arr.get::<bool>(i as u32) {
                 Ok(val) => match val {
@@ -197,7 +219,7 @@ impl FromNapiValue for Wrap<Float32Chunked> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         let arr = Array::from_napi_value(env, napi_val)?;
         let len = arr.len() as usize;
-        let mut builder = PrimitiveChunkedBuilder::<Float32Type>::new("", len);
+        let mut builder = PrimitiveChunkedBuilder::<Float32Type>::new(PlSmallStr::EMPTY, len);
         for i in 0..len {
             match arr.get::<f64>(i as u32) {
                 Ok(val) => match val {
@@ -220,7 +242,7 @@ macro_rules! impl_chunked {
             ) -> JsResult<Self> {
                 let arr = Array::from_napi_value(env, napi_val)?;
                 let len = arr.len() as usize;
-                let mut builder = PrimitiveChunkedBuilder::<$type>::new("", len);
+                let mut builder = PrimitiveChunkedBuilder::<$type>::new(PlSmallStr::EMPTY, len);
                 for i in 0..len {
                     match arr.get::<$native>(i as u32) {
                         Ok(val) => match val {
@@ -244,7 +266,7 @@ impl FromNapiValue for Wrap<ChunkedArray<UInt64Type>> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         let arr = Array::from_napi_value(env, napi_val)?;
         let len = arr.len() as usize;
-        let mut builder = PrimitiveChunkedBuilder::<UInt64Type>::new("", len);
+        let mut builder = PrimitiveChunkedBuilder::<UInt64Type>::new(PlSmallStr::EMPTY, len);
         for i in 0..len {
             match arr.get::<BigInt>(i as u32) {
                 Ok(val) => match val {
@@ -281,9 +303,9 @@ impl FromNapiValue for Wrap<JsExpr> {
     }
 }
 
-impl TypeName for Wrap<QuantileInterpolOptions> {
+impl TypeName for Wrap<QuantileMethod> {
     fn type_name() -> &'static str {
-        "QuantileInterpolOptions"
+        "QuantileMethod"
     }
 
     fn value_type() -> ValueType {
@@ -291,15 +313,15 @@ impl TypeName for Wrap<QuantileInterpolOptions> {
     }
 }
 
-impl FromNapiValue for Wrap<QuantileInterpolOptions> {
+impl FromNapiValue for Wrap<QuantileMethod> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         let interpolation = String::from_napi_value(env, napi_val)?;
         let interpol = match interpolation.as_ref() {
-            "nearest" => QuantileInterpolOptions::Nearest,
-            "lower" => QuantileInterpolOptions::Lower,
-            "higher" => QuantileInterpolOptions::Higher,
-            "midpoint" => QuantileInterpolOptions::Midpoint,
-            "linear" => QuantileInterpolOptions::Linear,
+            "nearest" => QuantileMethod::Nearest,
+            "lower" => QuantileMethod::Lower,
+            "higher" => QuantileMethod::Higher,
+            "midpoint" => QuantileMethod::Midpoint,
+            "linear" => QuantileMethod::Linear,
             _ => return Err(napi::Error::from_reason("not supported".to_owned())),
         };
         Ok(Wrap(interpol))
@@ -317,6 +339,23 @@ impl FromNapiValue for Wrap<StartBy> {
                 return Err(napi::Error::from_reason(format!(
                     "closed must be one of {{'window', 'datapoint', 'monday'}}, got {v}",
                 )))
+            }
+        };
+        Ok(Wrap(parsed))
+    }
+}
+
+impl FromNapiValue for Wrap<Label> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let start = String::from_napi_value(env, napi_val)?;
+        let parsed = match start.as_ref() {
+            "left" => Label::Left,
+            "right" => Label::Right,
+            "datapoint" => Label::DataPoint,
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "`label` must be one of {{'left', 'right', 'datapoint'}}, got {v}",
+                )));
             }
         };
         Ok(Wrap(parsed))
@@ -367,7 +406,6 @@ impl FromNapiValue for Wrap<ParquetCompression> {
         let compression = match compression.as_ref() {
             "snappy" => ParquetCompression::Snappy,
             "gzip" => ParquetCompression::Gzip(None),
-            "lzo" => ParquetCompression::Lzo,
             "brotli" => ParquetCompression::Brotli(None),
             "lz4" => ParquetCompression::Lz4Raw,
             "zstd" => ParquetCompression::Zstd(None),
@@ -382,10 +420,20 @@ impl FromNapiValue for Wrap<Option<IpcCompression>> {
         let compression = String::from_napi_value(env, napi_val)?;
         let compression = match compression.as_ref() {
             "lz4" => Some(IpcCompression::LZ4),
-            "zstd" => Some(IpcCompression::ZSTD),
+            "zstd" => Some(IpcCompression::ZSTD(Default::default())),
             _ => None,
         };
         Ok(Wrap(compression))
+    }
+}
+
+impl ToNapiValue for Wrap<Option<IpcCompression>> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let s = match val.0.unwrap() {
+            IpcCompression::LZ4 => "lz4",
+            IpcCompression::ZSTD(_) => "zstd",
+        };
+        String::to_napi_value(env, s.to_owned())
     }
 }
 
@@ -395,10 +443,12 @@ impl FromNapiValue for Wrap<UniqueKeepStrategy> {
         let method = match method.as_ref() {
             "first" => UniqueKeepStrategy::First,
             "last" => UniqueKeepStrategy::Last,
-            _ => {
-                return Err(napi::Error::from_reason(
-                    "use one of {'first', 'last'}".to_owned(),
-                ))
+            "any" => UniqueKeepStrategy::Any,
+            "none" => UniqueKeepStrategy::None,
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "UniqueKeepStrategy must be one of {{'first', 'last'}}, got {v}"
+                )))
             }
         };
         Ok(Wrap(method))
@@ -411,13 +461,29 @@ impl FromNapiValue for Wrap<NullStrategy> {
         let method = match method.as_ref() {
             "ignore" => NullStrategy::Ignore,
             "propagate" => NullStrategy::Propagate,
-            _ => {
-                return Err(napi::Error::from_reason(
-                    "use one of {'ignore', 'propagate'}".to_owned(),
-                ))
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "NullStrategy must be one of {{'ignore', 'propagate'}}, got {v}"
+                )))
             }
         };
         Ok(Wrap(method))
+    }
+}
+
+impl FromNapiValue for Wrap<NonExistent> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let method = String::from_napi_value(env, napi_val)?;
+        let parsed = match method.as_ref() {
+            "null" => NonExistent::Null,
+            "raise" => NonExistent::Raise,
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "`nonExistent` must be one of {{'null', 'raise'}}, got {v}"
+                )))
+            }
+        };
+        Ok(Wrap(parsed))
     }
 }
 
@@ -427,10 +493,10 @@ impl FromNapiValue for Wrap<NullBehavior> {
         let method = match method.as_ref() {
             "drop" => NullBehavior::Drop,
             "ignore" => NullBehavior::Ignore,
-            _ => {
-                return Err(napi::Error::from_reason(
-                    "use one of {'drop', 'ignore'}".to_owned(),
-                ))
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "`NullBehavior` must be one of {{'drop', 'ignore'}}, got {v}"
+                )))
             }
         };
         Ok(Wrap(method))
@@ -448,10 +514,10 @@ impl FromNapiValue for Wrap<FillNullStrategy> {
             "mean" => FillNullStrategy::Mean,
             "zero" => FillNullStrategy::Zero,
             "one" => FillNullStrategy::One,
-            _ => {
-                return Err(napi::Error::from_reason(
-                    "Strategy not supported".to_owned(),
-                ))
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "{v} strategy not supported",
+                )))
             }
         };
         Ok(Wrap(method))
@@ -496,48 +562,66 @@ impl FromNapiValue for Wrap<u64> {
     }
 }
 
+impl FromNapiValue for Wrap<RoundMode> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let method = String::from_napi_value(env, napi_val)?;
+        let method = match method.as_ref() {
+            "halftoeven" => RoundMode::HalfToEven,
+            "halfawayfromzero" => RoundMode::HalfAwayFromZero,
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "use one of {'halftoeven', 'halfawayfromzero'}".to_owned(),
+                ))
+            }
+        };
+        Ok(Wrap(method))
+    }
+}
+
 #[napi(object)]
 pub struct JsRollingOptions {
-    pub window_size: String,
+    pub window_size: i16,
     pub weights: Option<Vec<f64>>,
     pub min_periods: i64,
     pub center: bool,
     pub ddof: Option<u8>,
 }
 
-impl From<JsRollingOptions> for RollingOptionsImpl<'static> {
+impl From<JsRollingOptions> for RollingOptionsFixedWindow {
     fn from(o: JsRollingOptions) -> Self {
-        RollingOptionsImpl {
-            window_size: Duration::parse(&o.window_size),
+        RollingOptionsFixedWindow {
+            window_size: o.window_size as usize,
             weights: o.weights,
             min_periods: o.min_periods as usize,
             center: o.center,
-            by: None,
-            tu: None,
-            tz: None,
-            closed_window: None,
-            fn_params: Some(Arc::new(RollingVarParams {
+            fn_params: Some(RollingFnParams::Var(RollingVarParams {
                 ddof: o.ddof.unwrap_or(1),
-            }) as Arc<dyn Any + Send + Sync>),
+            })),
             ..Default::default()
         }
     }
 }
 
-impl From<JsRollingOptions> for RollingOptions {
-    fn from(o: JsRollingOptions) -> Self {
-        RollingOptions {
-            window_size: Duration::parse(&o.window_size),
-            weights: o.weights,
-            min_periods: o.min_periods as usize,
-            center: o.center,
-            by: None,
-            closed_window: None,
-            fn_params: Some(Arc::new(RollingVarParams {
-                ddof: o.ddof.unwrap_or(1),
-            }) as Arc<dyn Any + Send + Sync>),
-            ..Default::default()
-        }
+impl FromNapiValue for Wrap<SyncOnCloseType> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let soct = String::from_napi_value(env, napi_val)?;
+        let soct = match soct.as_ref() {
+            "none" => SyncOnCloseType::None,
+            "data" => SyncOnCloseType::Data,
+            "all" => SyncOnCloseType::All,
+            _ => return Err(napi::Error::from_reason("not supported".to_owned())),
+        };
+        Ok(Wrap(soct))
+    }
+}
+impl ToNapiValue for Wrap<SyncOnCloseType> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let s = match val.0 {
+            SyncOnCloseType::None => "none",
+            SyncOnCloseType::Data => "data",
+            SyncOnCloseType::All => "all",
+        };
+        String::to_napi_value(env, s.to_owned())
     }
 }
 
@@ -550,45 +634,49 @@ pub struct JsRowCount {
 impl From<JsRowCount> for RowIndex {
     fn from(o: JsRowCount) -> Self {
         RowIndex {
-            name: o.name,
+            name: o.name.into(),
             offset: o.offset,
         }
     }
 }
 
 #[napi(object)]
-pub struct WriteCsvOptions {
-    pub include_bom: Option<bool>,
-    pub include_header: Option<bool>,
-    pub sep: Option<String>,
-    pub quote: Option<String>,
-    pub line_terminator: Option<String>,
-    pub batch_size: Option<i64>,
-    pub datetime_format: Option<String>,
-    pub date_format: Option<String>,
-    pub time_format: Option<String>,
-    pub float_precision: Option<i64>,
-    pub null_value: Option<String>
-}
+pub struct JsSinkOptions {
+    /// Call sync when closing the file.
+    pub sync_on_close: Wrap<SyncOnCloseType>,
 
-#[napi(object)]
-pub struct SinkCsvOptions {
-    pub include_header: Option<bool>,
-    pub include_bom: Option<bool>,
-    pub separator: Option<String>,
-    pub line_terminator: Option<String>,
-    pub quote_char: Option<String>,
-    pub batch_size: Option<i64>,
-    pub datetime_format: Option<String>,
-    pub date_format: Option<String>,
-    pub time_format: Option<String>,
-    pub float_precision: Option<i64>,
-    pub null_value: Option<String>,
+    /// The output file needs to maintain order of the data that comes in.
     pub maintain_order: bool,
+
+    /// Recursively create all the directories in the path.
+    pub mkdir: bool,
+}
+impl From<JsSinkOptions> for FileSinkOptions {
+    fn from(o: JsSinkOptions) -> Self {
+        FileSinkOptions {
+            unified_sink_args: UnifiedSinkArgs {
+                sync_on_close: o.sync_on_close.0,
+                maintain_order: o.maintain_order,
+                mkdir: o.mkdir,
+                cloud_options: None,
+            },
+            target: SinkTarget::Path(PlRefPath::new("")),
+            file_format: FileWriteFormat::Parquet(Default::default()),
+        }
+    }
+}
+impl From<FileSinkOptions> for JsSinkOptions {
+    fn from(o: FileSinkOptions) -> Self {
+        JsSinkOptions {
+            sync_on_close: Wrap(o.unified_sink_args.sync_on_close),
+            maintain_order: o.unified_sink_args.maintain_order,
+            mkdir: o.unified_sink_args.mkdir,
+        }
+    }
 }
 
 #[napi(object)]
-pub struct SinkParquetOptions {
+pub struct SinkParquetOptions<'a> {
     pub compression: Option<String>,
     pub compression_level: Option<i32>,
     pub statistics: Option<bool>,
@@ -601,6 +689,46 @@ pub struct SinkParquetOptions {
     pub simplify_expression: Option<bool>,
     pub slice_pushdown: Option<bool>,
     pub no_optimization: Option<bool>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub sink_options: JsSinkOptions,
+}
+
+#[napi(object)]
+pub struct SinkJsonOptions<'a> {
+    pub maintain_order: Option<bool>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub sync_on_close: Wrap<SyncOnCloseType>,
+    pub mkdir: Option<bool>,
+}
+
+#[napi(object)]
+pub struct SinkIpcOptions<'a> {
+    pub compat_level: Option<String>,
+    pub compression: Wrap<Option<IpcCompression>>,
+    pub maintain_order: Option<bool>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub sync_on_close: Wrap<SyncOnCloseType>,
+    pub mkdir: Option<bool>,
+}
+
+#[napi(object)]
+pub struct ScanParquetOptions<'a> {
+    pub n_rows: Option<i64>,
+    pub row_index_name: Option<String>,
+    pub row_index_offset: Option<u32>,
+    pub cache: Option<bool>,
+    pub parallel: Wrap<ParallelStrategy>,
+    pub glob: Option<bool>,
+    pub hive_partitioning: Option<bool>,
+    pub hive_schema: Option<Wrap<Schema>>,
+    pub try_parse_hive_dates: Option<bool>,
+    pub rechunk: Option<bool>,
+    pub schema: Option<Wrap<Schema>>,
+    pub low_memory: Option<bool>,
+    pub use_statistics: Option<bool>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub include_file_paths: Option<String>,
+    pub allow_missing_columns: Option<bool>,
 }
 
 #[napi(object)]
@@ -638,11 +766,7 @@ impl FromNapiValue for Wrap<DataType> {
         match ty {
             ValueType::Object => {
                 let obj = Object::from_napi_value(env, napi_val)?;
-                let variant = if let Some(variant) = obj.get::<_, String>("variant")? {
-                    variant
-                } else {
-                    "".into()
-                };
+                let variant = obj.get::<String>("variant")?.map_or("".into(), |v| v);
 
                 let dtype = match variant.as_ref() {
                     "Int8" => DataType::Int8,
@@ -657,35 +781,67 @@ impl FromNapiValue for Wrap<DataType> {
                     "Float64" => DataType::Float64,
                     "Bool" => DataType::Boolean,
                     "Utf8" => DataType::String,
+                    "String" => DataType::String,
                     "List" => {
-                        let inner = obj.get::<_, Array>("inner")?.unwrap();
+                        let inner = obj.get::<Array>("inner")?.unwrap();
                         let inner_dtype: Object = inner.get::<Object>(0)?.unwrap();
                         let napi_dt = Object::to_napi_value(env, inner_dtype).unwrap();
 
                         let dt = Wrap::<DataType>::from_napi_value(env, napi_dt)?;
                         DataType::List(Box::new(dt.0))
                     }
+                    "FixedSizeList" => {
+                        let inner = obj.get::<Array>("inner")?.unwrap();
+                        let inner_dtype: Object = inner.get::<Object>(0)?.unwrap();
+                        let napi_dt = Object::to_napi_value(env, inner_dtype).unwrap();
+
+                        let dt = Wrap::<DataType>::from_napi_value(env, napi_dt)?;
+
+                        let size = inner.get::<i32>(1)?.unwrap();
+
+                        DataType::Array(Box::new(dt.0), size as usize)
+                    }
+
                     "Date" => DataType::Date,
                     "Datetime" => {
-                        let tu = obj.get::<_, Wrap<TimeUnit>>("timeUnit")?.unwrap();
-                        DataType::Datetime(tu.0, None)
+                        let tu = obj.get::<Wrap<TimeUnit>>("timeUnit")?.unwrap();
+                        let tz = obj.get::<Option<String>>("timeZone")?.unwrap();
+                        let time_zone = TimeZone::opt_try_new(tz).map_err(JsPolarsErr::from)?;
+                        DataType::Datetime(tu.0, time_zone)
                     }
                     "Time" => DataType::Time,
-                    "Object" => DataType::Object("object", None),
-                    "Categorical" => DataType::Categorical(None, Default::default()),
+                    "Duration" => {
+                        let tu = obj.get::<Wrap<TimeUnit>>("timeUnit")?.unwrap();
+                        DataType::Duration(tu.0)
+                    }
+                    "Object" => DataType::Object("object"),
+                    "Categorical" => {
+                        let categories = Categories::new(
+                            PlSmallStr::EMPTY,
+                            PlSmallStr::EMPTY,
+                            CategoricalPhysical::U32,
+                        );
+                        DataType::Categorical(categories.clone(), categories.clone().mapping())
+                    }
                     "Struct" => {
-                        let inner = obj.get::<_, Array>("fields")?.unwrap();
+                        let inner = obj.get::<Array>("fields")?.unwrap();
                         let mut fldvec: Vec<Field> = Vec::with_capacity(inner.len() as usize);
                         for i in 0..inner.len() {
                             let inner_dtype: Object = inner.get::<Object>(i)?.unwrap();
                             let napi_dt = Object::to_napi_value(env, inner_dtype).unwrap();
                             let obj = Object::from_napi_value(env, napi_dt)?;
-                            let name = obj.get::<_, String>("name")?.unwrap();
-                            let dt = obj.get::<_, Wrap<DataType>>("dtype")?.unwrap();
-                            let fld = Field::new(&name, dt.0);
+                            let name = obj.get::<String>("name")?.unwrap();
+                            let dt = obj.get::<Wrap<DataType>>("dtype")?.unwrap();
+                            let fld = Field::new(name.into(), dt.0);
                             fldvec.push(fld);
                         }
                         DataType::Struct(fldvec)
+                    }
+                    "Decimal" => {
+                        let inner = obj.get::<Array>("inner")?.unwrap(); // [precision, scale]
+                        let precision = inner.get::<Option<i32>>(0)?.unwrap().map(|x| x as usize);
+                        let scale = inner.get::<Option<i32>>(1)?.unwrap().map(|x| x as usize);
+                        DataType::Decimal(precision.unwrap_or(0), scale.unwrap_or(0))
                     }
                     tp => panic!("Type {} not implemented in str_to_polarstype", tp),
                 };
@@ -709,11 +865,11 @@ impl FromNapiValue for Wrap<Schema> {
                 Ok(Wrap(
                     keys.iter()
                         .map(|key| {
-                            let value = obj.get::<_, Object>(&key)?.unwrap();
+                            let value = obj.get::<Object>(&key)?.unwrap();
                             let napi_val = Object::to_napi_value(env, value)?;
                             let dtype = Wrap::<DataType>::from_napi_value(env, napi_val)?;
 
-                            Ok(Field::new(key, dtype.0))
+                            Ok(Field::new(key.into(), dtype.0))
                         })
                         .collect::<Result<Schema>>()?,
                 ))
@@ -728,7 +884,7 @@ impl FromNapiValue for Wrap<Schema> {
 impl ToNapiValue for Wrap<Schema> {
     unsafe fn to_napi_value(napi_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         let env = Env::from_raw(napi_env);
-        let mut schema = env.create_object()?;
+        let mut schema = Object::new(&env)?;
 
         for (name, dtype) in val.0.iter() {
             schema.set(name, Wrap(dtype.clone()))?;
@@ -741,13 +897,14 @@ impl ToNapiValue for Wrap<ParallelStrategy> {
     unsafe fn to_napi_value(napi_env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         let env = Env::from_raw(napi_env);
         let s = val.0;
-        let mut strategy = env.create_object()?;
+        let mut strategy = Object::new(&env)?;
 
         let unit = match s {
             ParallelStrategy::Auto => "auto",
             ParallelStrategy::Columns => "columns",
             ParallelStrategy::RowGroups => "row_groups",
             ParallelStrategy::None => "none",
+            ParallelStrategy::Prefiltered => "prefiltered",
         };
         let _ = strategy.set("strategy", unit);
         Object::to_napi_value(napi_env, strategy)
@@ -792,19 +949,88 @@ impl FromNapiValue for Wrap<InterpolationMethod> {
 impl FromNapiValue for Wrap<SortOptions> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
         let obj = Object::from_napi_value(env, napi_val)?;
-        let descending = obj.get::<_, bool>("descending")?.unwrap();
-        let nulls_last = if let Some(nulls_last) = obj.get::<_, bool>("nulls_last")? {
-            nulls_last
-        } else {
-            obj.get::<_, bool>("nullsLast")?.unwrap_or(false)
-        };
-        let multithreaded = obj.get::<_, bool>("multithreaded")?.unwrap();
-        let maintain_order: bool = obj.get::<_, bool>("maintain_order")?.unwrap();
+        let descending = obj.get::<bool>("descending")?.unwrap_or(false);
+        let nulls_last = obj
+            .get::<bool>("nulls_last")?
+            .or_else(|| obj.get::<bool>("nullsLast").expect("expect nullsLast"))
+            .unwrap_or(false);
+        let multithreaded = obj.get::<bool>("multithreaded")?.unwrap_or(false);
+        let maintain_order: bool = obj.get::<bool>("maintainOrder")?.unwrap_or(true);
+        let limit = obj.get::<_>("limit")?.unwrap();
         let options = SortOptions {
             descending,
             nulls_last,
             multithreaded,
             maintain_order,
+            limit,
+        };
+        Ok(Wrap(options))
+    }
+}
+impl FromNapiValue for Wrap<QuoteStyle> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let quote_style_str = String::from_napi_value(env, napi_val)?;
+
+        let parsed = match quote_style_str.as_str() {
+            "always" => QuoteStyle::Always,
+            "necessary" => QuoteStyle::Necessary,
+            "non_numeric" => QuoteStyle::NonNumeric,
+            "never" => QuoteStyle::Never,
+            _ => return Err(Error::new(Status::InvalidArg,
+                format!("`quote_style` must be one of {{'always', 'necessary', 'non_numeric', 'never'}}, got '{}'", quote_style_str),
+                )),
+        };
+        Ok(Wrap(parsed))
+    }
+}
+impl FromNapiValue for Wrap<CsvWriterOptions> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let obj = Object::from_napi_value(env, napi_val)?;
+        let include_bom = obj.get::<bool>("includeBom")?.unwrap_or(false);
+        let include_header = obj.get::<bool>("includeHeader")?.unwrap_or(true);
+        let batch_size = NonZero::new(obj.get::<i64>("batchSize")?.unwrap_or(1024) as usize)
+            .ok_or_else(|| napi::Error::from_reason("Invalid batch size"))?;
+        let date_format = obj.get::<String>("dateFormat")?;
+        let time_format = obj.get::<String>("timeFormat")?;
+        let datetime_format = obj.get::<String>("datetimeFormat")?;
+        let float_scientific = obj.get::<bool>("floatScientific")?;
+        let float_precision = obj.get::<i32>("floatPrecision")?.map(|x| x as usize);
+        let separator = obj
+            .get::<String>("separator")?
+            .unwrap_or(",".to_owned())
+            .as_bytes()[0];
+        let quote_char = obj
+            .get::<String>("quoteChar")?
+            .unwrap_or("\"".to_owned())
+            .as_bytes()[0];
+        let null_value = obj.get::<String>("nullValue")?.unwrap_or("".to_owned());
+        let line_terminator = obj
+            .get::<String>("lineTerminator")?
+            .unwrap_or("\n".to_owned());
+        let quote_style = obj
+            .get::<Wrap<QuoteStyle>>("quoteStyle")?
+            .map_or(QuoteStyle::default(), |wrap| wrap.0);
+
+        let serialize_options = SerializeOptions {
+            date_format: date_format.map(PlSmallStr::from_string),
+            time_format: time_format.map(PlSmallStr::from_string),
+            datetime_format: datetime_format.map(PlSmallStr::from_string),
+            float_scientific,
+            float_precision,
+            separator,
+            quote_char,
+            null: PlSmallStr::from_string(null_value),
+            line_terminator: PlSmallStr::from_string(line_terminator),
+            quote_style,
+            decimal_comma: false,
+        };
+
+        let options = CsvWriterOptions {
+            include_bom,
+            include_header,
+            batch_size,
+            serialize_options: serialize_options.into(),
+            ..Default::default()
         };
         Ok(Wrap(options))
     }
@@ -831,17 +1057,38 @@ impl FromNapiValue for Wrap<JoinType> {
         let parsed = match s.as_ref() {
             "inner" => JoinType::Inner,
             "left" => JoinType::Left,
-            "outer" => JoinType::Outer { coalesce: true },
+            "right" => JoinType::Right,
+            "full" => JoinType::Full,
             "semi" => JoinType::Semi,
             "anti" => JoinType::Anti,
             "cross" => JoinType::Cross,
             v =>
                 return Err(Error::new(
                     Status::InvalidArg,
-                    format!("how must be one of {{'inner', 'left', 'outer', 'semi', 'anti', 'cross'}}, got {v}")
+                    format!("how must be one of {{'inner', 'left', 'right', 'full', 'semi', 'anti', 'cross'}}, got {v}")
                 ))
         };
         Ok(Wrap(parsed))
+    }
+}
+
+impl FromNapiValue for Wrap<Engine> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> napi::Result<Self> {
+        let s = String::from_napi_value(env, napi_val)?;
+        let engine = match s.as_ref() {
+            "auto" => Engine::Auto,
+            "cpu" | "in-memory" => Engine::InMemory,
+            "streaming" => Engine::Streaming,
+            v => {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    format!(
+                    "`engine` must be one of {{'auto', 'in-memory', 'streaming', 'cpu'}}, got {v}",
+                ),
+                ))
+            }
+        };
+        Ok(Wrap(engine))
     }
 }
 
@@ -930,7 +1177,7 @@ impl ToNapiValue for Wrap<DataType> {
             DataType::String => String::to_napi_value(env, "String".to_owned()),
             DataType::List(inner) => {
                 let env_ctx = Env::from_raw(env);
-                let mut obj = env_ctx.create_object()?;
+                let mut obj = Object::new(&env_ctx)?;
                 let wrapped = Wrap(*inner);
 
                 obj.set("variant", "List")?;
@@ -940,28 +1187,29 @@ impl ToNapiValue for Wrap<DataType> {
             DataType::Date => String::to_napi_value(env, "Date".to_owned()),
             DataType::Datetime(tu, tz) => {
                 let env_ctx = Env::from_raw(env);
-                let mut obj = env_ctx.create_object()?;
+                let mut obj = Object::new(&env_ctx)?;
                 let mut inner_arr = env_ctx.create_array(2)?;
 
                 inner_arr.set(0, tu.to_ascii())?;
-                inner_arr.set(1, tz)?;
-
+                inner_arr.set(1, tz.as_ref().map_or("", |s| s.as_str()))?;
                 obj.set("variant", "Datetime")?;
                 obj.set("inner", inner_arr)?;
                 Object::to_napi_value(env, obj)
             }
+            DataType::Null => String::to_napi_value(env, "Null".to_owned()),
             DataType::Time => String::to_napi_value(env, "Time".to_owned()),
+            DataType::Duration(..) => String::to_napi_value(env, "Duration".to_owned()),
             DataType::Object(..) => String::to_napi_value(env, "Object".to_owned()),
             DataType::Categorical(..) => String::to_napi_value(env, "Categorical".to_owned()),
             DataType::Struct(flds) => {
                 let env_ctx = Env::from_raw(env);
 
-                let mut obj = env_ctx.create_object()?;
+                let mut obj = Object::new(&env_ctx)?;
                 let mut js_flds = env_ctx.create_array(flds.len() as u32)?;
                 for (idx, fld) in flds.iter().enumerate() {
                     let name = fld.name().clone();
-                    let dtype = Wrap(fld.data_type().clone());
-                    let mut fld_obj = env_ctx.create_object()?;
+                    let dtype = Wrap(fld.dtype().clone());
+                    let mut fld_obj = Object::new(&env_ctx)?;
                     fld_obj.set("name", name.to_string())?;
                     fld_obj.set("dtype", dtype)?;
                     js_flds.set(idx as u32, fld_obj)?;
@@ -969,6 +1217,27 @@ impl ToNapiValue for Wrap<DataType> {
                 obj.set("variant", "Struct")?;
                 obj.set("inner", vec![js_flds])?;
 
+                Object::to_napi_value(env, obj)
+            }
+            DataType::Array(dtype, size) => {
+                let env_ctx = Env::from_raw(env);
+                let mut obj = Object::new(&env_ctx)?;
+                let wrapped = Wrap(*dtype);
+                let mut inner_arr = env_ctx.create_array(2)?;
+                inner_arr.set(0, wrapped)?;
+                inner_arr.set(1, size as u32)?;
+                obj.set("variant", "FixedSizeList")?;
+                obj.set("inner", inner_arr)?;
+                Object::to_napi_value(env, obj)
+            }
+            DataType::Decimal(precision, scale) => {
+                let env_ctx = Env::from_raw(env);
+                let mut obj = Object::new(&env_ctx)?;
+                let mut inner_arr = env_ctx.create_array(2)?;
+                inner_arr.set(0, precision as u32)?;
+                inner_arr.set(1, scale as u32)?;
+                obj.set("variant", "Decimal")?;
+                obj.set("inner", inner_arr)?;
                 Object::to_napi_value(env, obj)
             }
             _ => {
@@ -981,11 +1250,16 @@ impl ToNapiValue for Wrap<DataType> {
 impl FromNapiValue for Wrap<NullValues> {
     unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
         if let Ok(s) = String::from_napi_value(env, napi_val) {
-            Ok(Wrap(NullValues::AllColumnsSingle(s)))
+            Ok(Wrap(NullValues::AllColumnsSingle(s.into())))
         } else if let Ok(s) = Vec::<String>::from_napi_value(env, napi_val) {
-            Ok(Wrap(NullValues::AllColumns(s)))
+            Ok(Wrap(NullValues::AllColumns(
+                s.into_iter().map(PlSmallStr::from_string).collect(),
+            )))
         } else if let Ok(s) = HashMap::<String, String>::from_napi_value(env, napi_val) {
-            let null_values: Vec<(String, String)> = s.into_iter().collect();
+            let null_values = s
+                .into_iter()
+                .map(|a| (PlSmallStr::from_string(a.0), PlSmallStr::from_string(a.1)))
+                .collect::<Vec<(PlSmallStr, PlSmallStr)>>();
             Ok(Wrap(NullValues::Named(null_values)))
         } else {
             Err(
@@ -999,10 +1273,15 @@ impl FromNapiValue for Wrap<NullValues> {
 impl ToNapiValue for Wrap<NullValues> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
         match val.0 {
-            NullValues::AllColumnsSingle(s) => String::to_napi_value(env, s),
-            NullValues::AllColumns(arr) => Vec::<String>::to_napi_value(env, arr),
+            NullValues::AllColumnsSingle(s) => String::to_napi_value(env, s.to_string()),
+            NullValues::AllColumns(arr) => {
+                Vec::<String>::to_napi_value(env, arr.iter().map(|x| x.to_string()).collect())
+            }
             NullValues::Named(obj) => {
-                let o: HashMap<String, String> = obj.into_iter().collect();
+                let o: HashMap<String, String> = obj
+                    .into_iter()
+                    .map(|s| (s.0.to_string(), s.1.to_string()))
+                    .collect::<HashMap<String, String>>();
                 HashMap::<String, String>::to_napi_value(env, o)
             }
         }
@@ -1010,18 +1289,18 @@ impl ToNapiValue for Wrap<NullValues> {
 }
 
 pub trait FromJsUnknown: Sized + Send {
-    fn from_js(obj: JsUnknown) -> Result<Self>;
+    fn from_js(obj: Unknown) -> Result<Self>;
 }
 
 impl FromJsUnknown for String {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsString = val.try_into()?;
-        s.into_utf8()?.into_owned()
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: String = unsafe { val.cast()? };
+        Ok(s)
     }
 }
 
 impl FromJsUnknown for AnyValue<'_> {
-    fn from_js(val: JsUnknown) -> Result<Self> {
+    fn from_js(val: Unknown) -> Result<Self> {
         match val.get_type()? {
             ValueType::Undefined | ValueType::Null => Ok(AnyValue::Null),
             ValueType::Boolean => bool::from_js(val).map(AnyValue::Boolean),
@@ -1030,10 +1309,10 @@ impl FromJsUnknown for AnyValue<'_> {
             ValueType::BigInt => u64::from_js(val).map(AnyValue::UInt64),
             ValueType::Object => {
                 if val.is_date()? {
-                    let d: JsDate = unsafe { val.cast() };
+                    let d: Date = unsafe { val.cast()? };
                     let d = d.value_of()?;
                     let d = d as i64;
-                    Ok(AnyValue::Datetime(d, TimeUnit::Milliseconds, &None))
+                    Ok(AnyValue::Datetime(d, TimeUnit::Milliseconds, None))
                 } else {
                     Err(JsPolarsErr::Other("Unsupported Data type".to_owned()).into())
                 }
@@ -1044,7 +1323,7 @@ impl FromJsUnknown for AnyValue<'_> {
 }
 
 impl FromJsUnknown for DataType {
-    fn from_js(val: JsUnknown) -> Result<Self> {
+    fn from_js(val: Unknown) -> Result<Self> {
         match val.get_type()? {
             ValueType::Undefined | ValueType::Null => Ok(DataType::Null),
             ValueType::Boolean => Ok(DataType::Boolean),
@@ -1064,29 +1343,29 @@ impl FromJsUnknown for DataType {
 }
 
 impl FromJsUnknown for bool {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsBoolean = val.try_into()?;
-        s.try_into()
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: bool = unsafe { val.cast()? };
+        Ok(s)
     }
 }
 
 impl FromJsUnknown for f64 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        s.try_into()
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: f64 = unsafe { val.cast()? };
+        Ok(s)
     }
 }
 
 impl FromJsUnknown for i64 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
+    fn from_js(val: Unknown) -> Result<Self> {
         match val.get_type()? {
             ValueType::BigInt => {
-                let big: JsBigInt = unsafe { val.cast() };
-                big.try_into()
+                let big: BigInt = unsafe { val.cast()? };
+                Ok(big.get_i64().0)
             }
             ValueType::Number => {
-                let s: JsNumber = val.try_into()?;
-                s.try_into()
+                let s: BigInt = unsafe { val.cast()? };
+                Ok(s.get_i64().0)
             }
             dt => Err(JsPolarsErr::Other(format!("cannot cast {} to i64", dt)).into()),
         }
@@ -1094,68 +1373,68 @@ impl FromJsUnknown for i64 {
 }
 
 impl FromJsUnknown for u64 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
+    fn from_js(val: Unknown) -> Result<Self> {
         match val.get_type()? {
             ValueType::BigInt => {
-                let big: JsBigInt = unsafe { val.cast() };
-                big.try_into()
+                let big: BigInt = unsafe { val.cast()? };
+                Ok(big.get_u64().1)
             }
             ValueType::Number => {
-                let s: JsNumber = val.try_into()?;
-                Ok(s.get_int64()? as u64)
+                let s: BigInt = unsafe { val.cast()? };
+                Ok(s.get_u64().1)
             }
             dt => Err(JsPolarsErr::Other(format!("cannot cast {} to u64", dt)).into()),
         }
     }
 }
 impl FromJsUnknown for u32 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        s.get_uint32()
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: u32 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 impl FromJsUnknown for f32 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        s.get_double().map(|s| s as f32)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: f64 = unsafe { val.cast() }?;
+        Ok(s as f32)
     }
 }
 
 impl FromJsUnknown for usize {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        Ok(s.get_uint32()? as usize)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: u32 = unsafe { val.cast() }?;
+        Ok(s as usize)
     }
 }
 impl FromJsUnknown for u8 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        Ok(s.get_uint32()? as u8)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: u8 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 impl FromJsUnknown for u16 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        Ok(s.get_uint32()? as u16)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: u16 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 impl FromJsUnknown for i8 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        Ok(s.get_int32()? as i8)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: i8 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 impl FromJsUnknown for i16 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        Ok(s.get_int32()? as i16)
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: i16 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 
 impl FromJsUnknown for i32 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
-        let s: JsNumber = val.try_into()?;
-        s.try_into()
+    fn from_js(val: Unknown) -> Result<Self> {
+        let s: i32 = unsafe { val.cast() }?;
+        Ok(s)
     }
 }
 
@@ -1163,7 +1442,7 @@ impl<V> FromJsUnknown for Option<V>
 where
     V: FromJsUnknown,
 {
-    fn from_js(val: JsUnknown) -> Result<Self> {
+    fn from_js(val: Unknown) -> Result<Self> {
         let v = V::from_js(val);
         match v {
             Ok(v) => Ok(Some(v)),
@@ -1178,7 +1457,7 @@ unsafe fn struct_dict<'a>(
     flds: &[Field],
 ) -> Result<sys::napi_value> {
     let env = Env::from_raw(env_raw);
-    let mut obj = env.create_object()?;
+    let mut obj = Object::new(&env)?;
     for (val, fld) in vals.zip(flds) {
         let key = fld.name();
         let val = Wrap(val);
@@ -1207,12 +1486,29 @@ pub(crate) fn parse_fill_null_strategy(
     Ok(parsed)
 }
 
-pub(crate) fn strings_to_smartstrings<I, S>(container: I) -> Vec<SmartString>
+pub(crate) fn strings_to_pl_smallstr<I, S>(container: I) -> Vec<PlSmallStr>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    container.into_iter().map(|s| s.as_ref().into()).collect()
+    container
+        .into_iter()
+        .map(|s| PlSmallStr::from_str(s.as_ref()))
+        .collect()
+}
+
+pub(crate) fn strings_to_selector<I, S>(container: I) -> Selector
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    Selector::ByName {
+        names: container
+            .into_iter()
+            .map(|s| PlSmallStr::from_str(s.as_ref()))
+            .collect(),
+        strict: true,
+    }
 }
 
 pub(crate) fn parse_parquet_compression(
@@ -1226,17 +1522,15 @@ pub(crate) fn parse_parquet_compression(
             compression_level
                 .map(|lvl| {
                     GzipLevel::try_new(lvl as u8)
-                        // .map_err(|e| JsValueErr::new_err(format!("{e:?}")))
-                        .map_err(|e| napi::Error::from_reason(format!("{:?}", e)))
+                        .map_err(|e| napi::Error::from_reason(e.to_string()))
                 })
                 .transpose()?,
         ),
-        "lzo" => ParquetCompression::Lzo,
         "brotli" => ParquetCompression::Brotli(
             compression_level
                 .map(|lvl| {
                     BrotliLevel::try_new(lvl as u32)
-                        .map_err(|e| napi::Error::from_reason(format!("{e:?}")))
+                        .map_err(|e| napi::Error::from_reason(e.to_string()))
                 })
                 .transpose()?,
         ),
@@ -1245,7 +1539,7 @@ pub(crate) fn parse_parquet_compression(
             compression_level
                 .map(|lvl| {
                     ZstdLevel::try_new(lvl)
-                        .map_err(|e| napi::Error::from_reason(format!("{e:?}")))
+                        .map_err(|e| napi::Error::from_reason(e.to_string()))
                 })
                 .transpose()?,
         ),
@@ -1256,4 +1550,102 @@ pub(crate) fn parse_parquet_compression(
         }
     };
     Ok(parsed)
+}
+
+pub fn parse_cloud_options(
+    uri: &str,
+    storage_options_dict: Option<HashMap<String, Wrap<polars::prelude::AnyValue<'_>>>>,
+) -> Option<CloudOptions> {
+    if storage_options_dict.is_none() {
+        return Some(None)?;
+    }
+
+    let cloud_scheme = CloudScheme::from_path(uri);
+    let mut storage_options: Vec<(String, String)> = vec![];
+    let mut file_cache_ttl: u64 = 2;
+    let mut retry_config = CloudRetryConfig::default();
+
+    if let Some(storage_options_dict) = storage_options_dict {
+        storage_options.reserve(storage_options_dict.len());
+        for v in storage_options_dict.iter() {
+            let (key, value) = (v.0, v.1 .0.clone());
+
+            macro_rules! expected_type {
+                ($key_name:expr, $type_name:expr) => {{
+                    |_| {
+                        let key_name = $key_name;
+                        let type_name = $type_name;
+                        JsPolarsErr::Other(format!(
+                            "invalid value for '{key_name}': '{value}' (expected {type_name})"
+                        ))
+                    }
+                }};
+            }
+
+            match key.as_str() {
+                "file_cache_ttl" => {
+                    file_cache_ttl = value
+                        .try_extract()
+                        .map_err(expected_type!("file_cache_ttl", "int"))
+                        .ok()?;
+                }
+                "max_retries" => {
+                    retry_config.max_retries = Some(
+                        value
+                            .try_extract()
+                            .map_err(expected_type!("max_retries", "int"))
+                            .ok()?,
+                    );
+                }
+                "retry_timeout_ms" => {
+                    retry_config.retry_timeout = Some(core::time::Duration::from_millis(
+                        value
+                            .try_extract()
+                            .map_err(expected_type!("retry_timeout", "int"))
+                            .ok()?,
+                    ));
+                }
+                "retry_init_backoff_ms" => {
+                    retry_config.retry_init_backoff = Some(core::time::Duration::from_millis(
+                        value
+                            .try_extract()
+                            .map_err(expected_type!("retry_init_backoff", "int"))
+                            .ok()?,
+                    ));
+                }
+                "retry_max_backoff_ms" => {
+                    retry_config.retry_max_backoff = Some(core::time::Duration::from_millis(
+                        value
+                            .try_extract()
+                            .map_err(expected_type!("retry_max_backoff", "int"))
+                            .ok()?,
+                    ));
+                }
+                "retry_base_multiplier" => {
+                    retry_config.retry_base_multiplier = Some(TotalOrdWrap(
+                        value
+                            .try_extract()
+                            .map_err(expected_type!("retry_base_multiplier", "float"))
+                            .ok()?,
+                    ));
+                }
+                _ => {
+                    let value: String = value.extract_str()?.to_string();
+                    storage_options.push((key.clone(), value))
+                }
+            }
+        }
+    }
+
+    let mut cloud_options = CloudOptions::from_untyped_config(cloud_scheme, storage_options)
+        .map_err(JsPolarsErr::from)
+        .ok()?
+        .with_retry_config(retry_config);
+
+    if file_cache_ttl > 0 {
+        cloud_options.file_cache_ttl = file_cache_ttl;
+    }
+    verbose_print_sensitive(|| format!("extracted cloud_options: {:?}", &cloud_options));
+
+    Some(cloud_options)
 }

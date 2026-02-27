@@ -1,13 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
+import { Stream } from "node:stream";
 import pl from "@polars";
-import path from "path";
-import { Stream } from "stream";
-import fs from "fs";
+
 // eslint-disable-next-line no-undef
 const csvpath = path.resolve(__dirname, "./examples/datasets/foods1.csv");
 // eslint-disable-next-line no-undef
 const tsvpath = path.resolve(__dirname, "./examples/datasets/data.tsv");
 // eslint-disable-next-line no-undef
 const emptycsvpath = path.resolve(__dirname, "./examples/datasets/empty.csv");
+// eslint-disable-next-line no-undef
+const pipecsvpath = path.resolve(__dirname, "./examples/datasets/pipe-eol.csv");
 // eslint-disable-next-line no-undef
 const parquetpath = path.resolve(__dirname, "./examples/foods.parquet");
 // eslint-disable-next-line no-undef
@@ -26,7 +29,7 @@ describe("read:csv", () => {
     expect(df.shape).toEqual({ height: 27, width: 4 });
   });
   it("can read from a csv file with inferSchemaLength = 0 option", () => {
-    const df = pl.readCSV(csvpath, { inferSchemaLength: 0 });
+    let df = pl.readCSV(csvpath, { inferSchemaLength: 0 });
     const expected = `shape: (1, 4)
 ┌────────────┬──────────┬────────┬──────────┐
 │ category   ┆ calories ┆ fats_g ┆ sugars_g │
@@ -35,6 +38,8 @@ describe("read:csv", () => {
 ╞════════════╪══════════╪════════╪══════════╡
 │ vegetables ┆ 45       ┆ 0.5    ┆ 2        │
 └────────────┴──────────┴────────┴──────────┘`;
+    expect(df.head(1).toString()).toEqual(expected);
+    df = pl.readCSV(csvpath, { inferSchemaLength: null });
     expect(df.head(1).toString()).toEqual(expected);
   });
   it("can read from a csv file with options", () => {
@@ -52,6 +57,33 @@ describe("read:csv", () => {
       csvString.slice(0, 22),
     );
   });
+  it("can read from a csv file with eolChar", async () => {
+    const actual = pl.readCSV(pipecsvpath, { eolChar: "|" });
+    const expected = `shape: (2, 2)
+┌─────┬─────┐
+│ a   ┆ b   │
+│ --- ┆ --- │
+│ i64 ┆ str │
+╞═════╪═════╡
+│ 1   ┆ foo │
+│ 2   ┆ boo │
+└─────┴─────┘`;
+    expect(actual.toString()).toEqual(expected);
+  });
+  it("can read from a csv buffer with newline in the header", () => {
+    const csvBuffer = Buffer.from(
+      '"name\na","height\nb"\n"John",172.23\n"Anna",1653.34',
+    );
+    const df = pl.readCSV(csvBuffer, {
+      sep: ",",
+      hasHeader: false,
+      skipRows: 1,
+    });
+    expect(df.toRecords()).toEqual([
+      { column_1: "John", column_2: 172.23 },
+      { column_1: "Anna", column_2: 1653.34 },
+    ]);
+  });
   it("can read from a csv buffer", () => {
     const csvBuffer = Buffer.from("foo,bar,baz\n1,2,3\n4,5,6\n", "utf-8");
     const df = pl.readCSV(csvBuffer);
@@ -60,8 +92,8 @@ describe("read:csv", () => {
     );
   });
   it("can read from a csv buffer quoted", () => {
-    const csvBuffer = Buffer.from('a,b,c,d\n1,test,"a,b,c",another test');
-    const df = pl.readCSV(csvBuffer, { quoteChar: '"' });
+    let csvBuffer = Buffer.from('a,b,c,d\n1,test,"a,b,c",another test');
+    let df = pl.readCSV(csvBuffer);
     const expected = `shape: (1, 4)
 ┌─────┬──────┬───────┬──────────────┐
 │ a   ┆ b    ┆ c     ┆ d            │
@@ -70,6 +102,9 @@ describe("read:csv", () => {
 ╞═════╪══════╪═══════╪══════════════╡
 │ 1   ┆ test ┆ a,b,c ┆ another test │
 └─────┴──────┴───────┴──────────────┘`;
+    expect(df.toString()).toEqual(expected);
+    csvBuffer = Buffer.from("a,b,c,d\n1,test,|a,b,c|,another test");
+    df = pl.readCSV(csvBuffer, { quoteChar: "|" });
     expect(df.toString()).toEqual(expected);
   });
   it("can read from a csv buffer with options", () => {
@@ -147,6 +182,10 @@ describe("read:csv", () => {
     const df2 = pl.readCSV(csv, { dtypes: { a: pl.Utf8 } });
     expect(df2.dtypes[0].equals(pl.String)).toBeTruthy();
   });
+  test("csv with commentPrefix", () => {
+    const df = pl.readCSV(csvpath, { commentPrefix: "vegetables" });
+    expect(df.shape).toEqual({ height: 20, width: 4 });
+  });
   it.todo("can read from a stream");
 });
 
@@ -156,7 +195,11 @@ describe("read:json", () => {
     expect(df.shape).toEqual({ height: 27, width: 4 });
   });
   it("can specify read options", () => {
-    const df = pl.readJSON(jsonpath, { batchSize: 10, inferSchemaLength: 100 });
+    let df = pl.readJSON(jsonpath, { batchSize: 10, inferSchemaLength: 100 });
+    expect(df.shape).toEqual({ height: 27, width: 4 });
+    df = pl.readJSON(jsonpath, { batchSize: 10, inferSchemaLength: null });
+    expect(df.shape).toEqual({ height: 27, width: 4 });
+    df = pl.readJSON(jsonpath, { batchSize: 10, inferSchemaLength: 0 });
     expect(df.shape).toEqual({ height: 27, width: 4 });
   });
   it("can read from a json buffer", () => {
@@ -170,6 +213,16 @@ describe("read:json", () => {
     expect(df.writeJSON({ format: "lines" }).toString().slice(0, 30)).toEqual(
       json.slice(0, 30),
     );
+  });
+  it("can read null json from buffer", () => {
+    const json = [
+      JSON.stringify({ bar: 1, foo: "a", nul: null }),
+      JSON.stringify({ bar: 2, foo: "b", nul: null }),
+      "",
+    ].join("\n");
+    const df = pl.readJSON(Buffer.from(json), { format: "lines" });
+    const actualCols = df.getColumns().map((x) => x.dtype);
+    expect(actualCols).toEqual([pl.Int64, pl.String, pl.Null]);
   });
 });
 
@@ -189,7 +242,7 @@ describe("scan", () => {
         skipRows: 1,
         nRows: 4,
       })
-      .collectSync();
+      .collectSync({ engine: "streaming" });
 
     expect(df.shape).toEqual({ height: 4, width: 4 });
   });
@@ -204,7 +257,7 @@ describe("scan", () => {
         skipRows: 2,
         nRows: 4,
       })
-      .collectSync();
+      .collectSync({ engine: "auto" });
 
     expect(df.shape).toEqual({ height: 4, width: 4 });
 
@@ -234,6 +287,19 @@ describe("scan", () => {
     const df = pl.scanParquet(parquetpath).collectSync();
 
     expect(df.shape).toEqual({ height: 4, width: 4 });
+  });
+  it("can lazy load (scan) from a csv file with eolChar", async () => {
+    const actual = pl.scanCSV(pipecsvpath, { eolChar: "|" }).collectSync();
+    const expected = `shape: (2, 2)
+┌─────┬─────┐
+│ a   ┆ b   │
+│ --- ┆ --- │
+│ i64 ┆ str │
+╞═════╪═════╡
+│ 1   ┆ foo │
+│ 2   ┆ boo │
+└─────┴─────┘`;
+    expect(actual.toString()).toEqual(expected);
   });
 });
 
@@ -283,6 +349,17 @@ describe("parquet", () => {
     const df = pl.scanParquet(parquetpath, { nRows: 4 }).collectSync();
     expect(df.shape).toEqual({ height: 4, width: 4 });
   });
+
+  test("writeParquet with decimals", async () => {
+    const df = pl.DataFrame([
+      pl.Series("decimal", [1n, 2n, 3n], pl.Decimal(2, 0)),
+      pl.Series("u32", [1, 2, 3], pl.UInt32),
+      pl.Series("str", ["a", "b", "c"]),
+    ]);
+    const buf = df.writeParquet();
+    const newDF = pl.readParquet(buf);
+    expect(newDF).toFrameEqual(df);
+  });
 });
 
 describe("ipc", () => {
@@ -330,6 +407,191 @@ describe("ipc", () => {
     const ipcDF = pl.readIPC(ipcpath);
     expect(ipcDF).toFrameEqual(csvDF);
   });
+
+  test("readIPC:datetime:microseconds", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path");
+    const tmpPath = path.resolve(__dirname, "./test_datetime_us.ipc");
+
+    try {
+      const dt1 = new Date("2024-02-28T14:53:00.000Z");
+      const dt2 = new Date("2025-01-03T09:30:00.000Z");
+      const dt3 = new Date("2024-12-31T23:59:59.999Z");
+
+      const df = pl.DataFrame({
+        id: [1, 2, 3],
+        datetime_us: pl.Series(
+          "datetime_us",
+          [dt1, dt2, dt3],
+          pl.Datetime("us"),
+        ),
+        date_field: pl.Series("date_field", [dt1, dt2, dt3], pl.Date),
+      });
+
+      df.writeIPC(tmpPath);
+      const dfRead = pl.readIPC(tmpPath);
+
+      const variants = dfRead.dtypes.map((dt) => dt.variant);
+      expect(variants[0]).toMatch(/Int64|Float64/);
+      expect(variants[1]).toBe("Datetime");
+      expect(variants[2]).toBe("Date");
+
+      const records = dfRead.toRecords() as unknown as Array<{
+        id: number;
+        datetime_us: Date;
+        date_field: Date;
+      }>;
+
+      expect(records).toHaveLength(3);
+
+      const date1 = records[0].datetime_us;
+      const date2 = records[1].datetime_us;
+      const date3 = records[2].datetime_us;
+
+      expect(Math.abs(date1.getTime() - dt1.getTime())).toBeLessThan(1000);
+      expect(Math.abs(date2.getTime() - dt2.getTime())).toBeLessThan(1000);
+      expect(Math.abs(date3.getTime() - dt3.getTime())).toBeLessThan(1000);
+    } finally {
+      if (fs.existsSync(tmpPath)) {
+        fs.rmSync(tmpPath);
+      }
+    }
+  });
+  test("readIPC:date", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path");
+    const tmpPath = path.resolve(__dirname, "./test_date.ipc");
+
+    try {
+      const dt1 = new Date("2024-02-28T14:53:00.000Z");
+      const dt2 = new Date("2025-01-03T09:30:00.000Z");
+      const dt3 = new Date("2024-12-31T23:59:59.999Z");
+
+      const df = pl.DataFrame({
+        id: [1, 2, 3],
+        date_field: pl.Series("date_field", [dt1, dt2, dt3], pl.Date),
+      });
+
+      df.writeIPC(tmpPath);
+      const dfRead = pl.readIPC(tmpPath);
+
+      const variants = dfRead.dtypes.map((dt) => dt.variant);
+      expect(variants[0]).toMatch(/Int64|Float64/);
+      expect(variants[1]).toBe("Date");
+
+      const records = dfRead.toRecords() as unknown as Array<{
+        id: number;
+        date_field: Date;
+      }>;
+
+      expect(records).toHaveLength(3);
+
+      const date1 = records[0].date_field;
+      const date2 = records[1].date_field;
+      const date3 = records[2].date_field;
+
+      const expected1 = Date.UTC(
+        dt1.getUTCFullYear(),
+        dt1.getUTCMonth(),
+        dt1.getUTCDate(),
+      );
+      const expected2 = Date.UTC(
+        dt2.getUTCFullYear(),
+        dt2.getUTCMonth(),
+        dt2.getUTCDate(),
+      );
+      const expected3 = Date.UTC(
+        dt3.getUTCFullYear(),
+        dt3.getUTCMonth(),
+        dt3.getUTCDate(),
+      );
+
+      expect(date1.getTime()).toBe(expected1);
+      expect(date2.getTime()).toBe(expected2);
+      expect(date3.getTime()).toBe(expected3);
+    } finally {
+      if (fs.existsSync(tmpPath)) {
+        fs.rmSync(tmpPath);
+      }
+    }
+  });
+  test("readIPC:datetime:microseconds:fromPythonIPC", () => {
+    const path = require("node:path");
+    const pythonIpcPath = path.resolve(
+      __dirname,
+      "./examples/datasets/test_datetime_us_python.ipc",
+    );
+
+    if (!fs.existsSync(pythonIpcPath)) {
+      console.warn(
+        `Skipping test: ${pythonIpcPath} not found. Run create_test_datetime.py first.`,
+      );
+      return;
+    }
+
+    const dfRead = pl.readIPC(pythonIpcPath);
+
+    const variants = dfRead.dtypes.map((dt) => dt.variant);
+    expect(variants[0]).toMatch(/Int64|Float64/);
+    expect(variants[1]).toBe("Datetime");
+    expect(variants[2]).toBe("Date");
+
+    const records = dfRead.toRecords() as unknown as Array<{
+      id: number;
+      datetime_us: Date;
+      date_field: Date;
+    }>;
+
+    expect(records).toHaveLength(3);
+
+    const date1 = records[0].datetime_us;
+    const date2 = records[1].datetime_us;
+    const date3 = records[2].datetime_us;
+
+    const expected1 = new Date("2024-02-28T14:53:00.000Z").getTime();
+    const expected2 = new Date("2025-01-03T09:30:00.000Z").getTime();
+    const expected3 = new Date("2024-12-31T23:59:59.999Z").getTime();
+
+    expect(Math.abs(date1.getTime() - expected1)).toBeLessThan(1000);
+    expect(Math.abs(date2.getTime() - expected2)).toBeLessThan(1000);
+    expect(Math.abs(date3.getTime() - expected3)).toBeLessThan(1000);
+  });
+});
+describe("ipc stream", () => {
+  beforeEach(() => {
+    pl.readCSV(csvpath).writeIPCStream(ipcpath);
+  });
+  afterEach(() => {
+    fs.rmSync(ipcpath);
+  });
+
+  test("read", () => {
+    const df = pl.readIPCStream(ipcpath);
+    expect(df.shape).toEqual({ height: 27, width: 4 });
+  });
+  test("read/write:buffer", () => {
+    const buff = pl.readCSV(csvpath).writeIPCStream();
+    const df = pl.readIPCStream(buff);
+    expect(df.shape).toEqual({ height: 27, width: 4 });
+  });
+  test("read:compressed", () => {
+    const csvDF = pl.readCSV(csvpath);
+    csvDF.writeIPCStream(ipcpath, { compression: "lz4" });
+    const ipcDF = pl.readIPCStream(ipcpath);
+    expect(ipcDF).toFrameEqual(csvDF);
+  });
+
+  test("read:options", () => {
+    const df = pl.readIPCStream(ipcpath, { nRows: 4 });
+    expect(df.shape).toEqual({ height: 4, width: 4 });
+  });
+
+  test("writeIPCStream", () => {
+    const csvDF = pl.readCSV(csvpath);
+    csvDF.writeIPCStream(ipcpath);
+    const ipcDF = pl.readIPCStream(ipcpath);
+    expect(ipcDF).toFrameEqual(csvDF);
+  });
 });
 
 describe("avro", () => {
@@ -349,20 +611,20 @@ describe("avro", () => {
     const actual = pl.readAvro(buf);
     expect(actual).toFrameEqual(expected);
   });
-  test("read", () => {
-    const df = pl.readAvro(avropath);
-    expect(df.shape).toEqual({ height: 27, width: 4 });
+  test("read:avro", () => {
+    const df = pl.readAvro(avropath, { nRows: 4 });
+    expect(df.shape).toEqual({ height: 4, width: 4 });
   });
-  test("read:buffer", () => {
+  test("read:avro:buffer", () => {
     const buff = fs.readFileSync(avropath);
-    const df = pl.readAvro(buff);
-    expect(df.shape).toEqual({ height: 27, width: 4 });
+    const df = pl.readAvro(buff, { nRows: 4 });
+    expect(df.shape).toEqual({ height: 4, width: 4 });
   });
 
-  test("read:compressed", () => {
-    const csvDF = pl.readCSV(csvpath);
+  test("read:avro:compressed", () => {
+    const csvDF = pl.readCSV(csvpath, { nRows: 4 });
     csvDF.writeAvro(avropath, { compression: "snappy" });
-    const df = pl.readAvro(avropath);
+    const df = pl.readAvro(avropath, { nRows: 4 });
     expect(df).toFrameEqual(csvDF);
   });
 

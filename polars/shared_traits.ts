@@ -1,14 +1,14 @@
-import type { ColumnsOrExpr, StartBy } from "./utils";
-import { type Expr, _Expr } from "./lazy/expr";
-
+import type { DataType } from "./datatypes";
+import type { Expr } from "./lazy/expr";
 import type {
+  ClosedWindow,
   InterpolationMethod,
   RollingOptions,
   RollingQuantileOptions,
   RollingSkewOptions,
-  ClosedWindow,
+  RoundMode,
 } from "./types";
-import type { DataType } from "./datatypes";
+import type { ColumnsOrExpr, StartBy } from "./utils";
 
 /**
  * Arithmetic operations
@@ -241,13 +241,13 @@ export interface Rolling<T> {
    * @param center - Set the labels at the center of the window
    * @category Rolling
    */
-  rollingMax(options: RollingOptions): T;
   rollingMax(
     windowSize: number,
     weights?: Array<number>,
     minPeriods?: Array<number>,
     center?: boolean,
   ): T;
+  rollingMax(options: RollingOptions): T;
   /**
    * __Apply a rolling mean (moving mean) over the values in this Series.__
    *
@@ -264,13 +264,13 @@ export interface Rolling<T> {
    * @param center - Set the labels at the center of the window
    * @category Rolling
    */
-  rollingMean(options: RollingOptions): T;
   rollingMean(
     windowSize: number,
     weights?: Array<number>,
     minPeriods?: Array<number>,
     center?: boolean,
   ): T;
+  rollingMean(options: RollingOptions): T;
   /**
    * __Apply a rolling min (moving min) over the values in this Series.__
    *
@@ -287,13 +287,13 @@ export interface Rolling<T> {
    * @param center - Set the labels at the center of the window
    * @category Rolling
    */
-  rollingMin(options: RollingOptions): T;
   rollingMin(
     windowSize: number,
     weights?: Array<number>,
     minPeriods?: Array<number>,
     center?: boolean,
   ): T;
+  rollingMin(options: RollingOptions): T;
   /**
    * Compute a rolling std dev
    *
@@ -312,7 +312,6 @@ export interface Rolling<T> {
    *        By default ddof is 1.
    * @category Rolling
    */
-  rollingStd(options: RollingOptions): T;
   rollingStd(
     windowSize: number,
     weights?: Array<number>,
@@ -320,6 +319,7 @@ export interface Rolling<T> {
     center?: boolean,
     ddof?: number,
   ): T;
+  rollingStd(options: RollingOptions): T;
   /**
    * __Apply a rolling sum (moving sum) over the values in this Series.__
    *
@@ -336,13 +336,13 @@ export interface Rolling<T> {
    * @param center - Set the labels at the center of the window
    * @category Rolling
    */
-  rollingSum(options: RollingOptions): T;
   rollingSum(
     windowSize: number,
     weights?: Array<number>,
     minPeriods?: Array<number>,
     center?: boolean,
   ): T;
+  rollingSum(options: RollingOptions): T;
   /**
    * __Compute a rolling variance.__
    *
@@ -362,7 +362,6 @@ export interface Rolling<T> {
    *        By default ddof is 1.
    * @category Rolling
    */
-  rollingVar(options: RollingOptions): T;
   rollingVar(
     windowSize: number,
     weights?: Array<number>,
@@ -370,17 +369,18 @@ export interface Rolling<T> {
     center?: boolean,
     ddof?: number,
   ): T;
+  rollingVar(options: RollingOptions): T;
   /**
    * Compute a rolling median
    * @category Rolling
    */
-  rollingMedian(options: RollingOptions): T;
   rollingMedian(
     windowSize: number,
     weights?: Array<number>,
     minPeriods?: Array<number>,
     center?: boolean,
   ): T;
+  rollingMedian(options: RollingOptions): T;
   /**
    * Compute a rolling quantile
    * @param quantile quantile to compute
@@ -393,7 +393,6 @@ export interface Rolling<T> {
    * @param center - Set the labels at the center of the window
    * @category Rolling
    */
-  rollingQuantile(options: RollingQuantileOptions): T;
   rollingQuantile(
     quantile: number,
     interpolation?: InterpolationMethod,
@@ -404,6 +403,7 @@ export interface Rolling<T> {
     by?: string,
     closed?: ClosedWindow,
   ): T;
+  rollingQuantile(options: RollingQuantileOptions): T;
   /**
    * Compute a rolling skew
    * @param windowSize Size of the rolling window
@@ -427,10 +427,16 @@ export interface Round<T> {
    *
    * Similar functionality to javascript `toFixed`
    * @param decimals number of decimals to round by.
+   * @param mode Rounding mode, the default is "half to even" (also known as "bankers' rounding").
+            RoundMode.
+            * *halftoeven*
+                round to the nearest even number
+            * *halfawayfromzero*
+                round to the nearest number away from zero
    * @category Math
    */
-  round(decimals: number): T;
-  round(options: { decimals: number }): T;
+  round(decimals: number, mode?: RoundMode): T;
+  round(options: { decimals: number; mode?: RoundMode }): T;
   /**
    * Floor underlying floating point array to the lowest integers smaller or equal to the float value.
    * Only works on floating point Series
@@ -485,6 +491,12 @@ export interface Sample<T> {
    * @category Math
    */
 
+  sample(
+    n?: number,
+    frac?: number,
+    withReplacement?: boolean,
+    seed?: number | bigint,
+  ): T;
   sample(opts?: {
     n: number;
     withReplacement?: boolean;
@@ -495,12 +507,6 @@ export interface Sample<T> {
     withReplacement?: boolean;
     seed?: number | bigint;
   }): T;
-  sample(
-    n?: number,
-    frac?: number,
-    withReplacement?: boolean,
-    seed?: number | bigint,
-  ): T;
 }
 
 export interface Bincode<T> {
@@ -512,7 +518,37 @@ export interface Bincode<T> {
  * Functions that can be applied to dtype List
  */
 export interface ListFunctions<T> {
+  /**
+   * Retrieve the index of the minimal value in every sublist.
+   * @returns Expression of data type :class:`UInt32` or :class:`UInt64`
+   * @example
+   * --------
+   * ```
+   * const s0 = pl.Series("a", [[1, 2], [2, 1]]);
+   * s0.list.argMax();
+   * Series: 'a' [u32]
+   * [
+   *   0
+   *   1
+   * ]
+   * ```
+   */
   argMin(): T;
+  /**
+   * Retrieve the index of the maximum value in every sublist.
+   * @returns Expression of data type :class:`UInt32` or :class:`UInt64`
+   * @example
+   * --------
+   * ```
+   * const s0 = pl.Series("a", [[1, 2], [2, 1]]);
+   * s0.list.argMax();
+   * Series: 'a' [u32]
+   * [
+   *   1
+   *   0
+   * ]
+   * ```
+   */
   argMax(): T;
   /**
    * Concat the arrays in a Series dtype List in linear time.
@@ -524,7 +560,7 @@ export interface ListFunctions<T> {
    *   "a": [["a"], ["x"]],
    *   "b": [["b", "c"], ["y", "z"]],
    * })
-   * df.select(pl.col("a").lst.concat("b"))
+   * df.select(pl.col("a").list.concat("b"))
    * shape: (2, 1)
    * ┌─────────────────┐
    * │ a               │
@@ -542,11 +578,12 @@ export interface ListFunctions<T> {
   /**
    * Check if sublists contain the given item.
    * @param item Item that will be checked for membership
+   * @param nullBehavior - bool, default True If True, treat null as a distinct value. Null values will not propagate.
    * @example
    * --------
    * ```
    * df = pl.DataFrame({"foo": [[3, 2, 1], [], [1, 2]]})
-   * df.select(pl.col("foo").lst.contains(1))
+   * df.select(pl.col("foo").list.contains(1))
    * shape: (3, 1)
    * ┌───────┐
    * │ foo   │
@@ -562,14 +599,14 @@ export interface ListFunctions<T> {
    * ```
    * @category List
    */
-  contains(item: any): T;
+  contains(item: any, nullBehavior?: boolean): T;
   /**
    * Calculate the n-th discrete difference of every sublist.
    * @param n number of slots to shift
    * @param nullBehavior 'ignore' | 'drop'
    * ```
    * s = pl.Series("a", [[1, 2, 3, 4], [10, 2, 1]])
-   * s.lst.diff()
+   * s.list.diff()
    *
    * shape: (2,)
    * Series: 'a' [list]
@@ -583,26 +620,34 @@ export interface ListFunctions<T> {
   diff(n?: number, nullBehavior?: "ignore" | "drop"): T;
   /**
    * Get the value by index in the sublists.
-   * So index `0` would return the first item of every sublist
-   * and index `-1` would return the last item of every sublist
-   * if an index is out of bounds, it will return a `null`.
+   * @param index - Index to return per sublist
+   * @param nullOnOob - Behavior if an index is out of bounds:
+                      * True -> set as null
+                      * False -> raise an error
+   * @example
+   * -------
+   * ```
+   * const s0 = pl.Series("a", [[1, 2], [2, 1]]);
+   * s0.list.get(0);
+   * Series: 'a' [f64]
+    [
+      1.0
+      2.0
+    ]
+   * ```
    * @category List
    */
-  get(index: number | Expr): T;
+  get(index: number | Expr, nullOnOob?: boolean): T;
   /**
    *  Run any polars expression against the lists' elements
    *  Parameters
    *  ----------
    * @param expr
    *   Expression to run. Note that you can select an element with `pl.first()`, or `pl.col()`
-   * @param parallel
-   *   Run all expression parallel. Don't activate this blindly.
-   *   Parallelism is worth it if there is enough work to do per thread.
-   *   This likely should not be use in the groupby context, because we already parallel execution per group
    * @example
    *  >df = pl.DataFrame({"a": [1, 8, 3], "b": [4, 5, 2]})
    *  >df.withColumn(
-   *  ...   pl.concatList(["a", "b"]).lst.eval(pl.first().rank()).alias("rank")
+   *  ...   pl.concatList(["a", "b"]).list.eval(pl.first().rank()).alias("rank")
    *  ... )
    *  shape: (3, 3)
    *  ┌─────┬─────┬────────────┐
@@ -618,7 +663,7 @@ export interface ListFunctions<T> {
    *  └─────┴─────┴────────────┘
    * @category List
    */
-  eval(expr: Expr, parallel?: boolean): T;
+  eval(expr: Expr): T;
   /**
    * Get the first value of the sublists.
    * @category List
@@ -630,7 +675,7 @@ export interface ListFunctions<T> {
    * @example
    * ```
    * s = pl.Series("a", [[1, 2, 3, 4], [10, 2, 1]])
-   * s.lst.head(2)
+   * s.list.head(2)
    * shape: (2,)
    * Series: 'a' [list]
    * [
@@ -647,7 +692,7 @@ export interface ListFunctions<T> {
    * @example
    * ```
    * s = pl.Series("a", [[1, 2, 3, 4], [10, 2, 1]])
-   * s.lst.tail(2)
+   * s.list.tail(2)
    * shape: (2,)
    * Series: 'a' [list]
    * [
@@ -661,14 +706,14 @@ export interface ListFunctions<T> {
   /**
    * Join all string items in a sublist and place a separator between them.
    * This errors if inner type of list `!= Utf8`.
-   * @param separator A string used to separate one element of the list from the next in the resulting string.
+   * @param options.separator A string used to separate one element of the list from the next in the resulting string.
    * If omitted, the list elements are separated with a comma.
-   * @param ignoreNulls - If true, null values will be ignored.
+   * @param options.ignoreNulls - If true, null values will be ignored.
    * @category List
    */
+  join(options: { separator?: string | Expr; ignoreNulls?: boolean }): T;
   join(): T;
   join(separator: string | Expr): T;
-  join(options: { separator?: string | Expr; ignoreNulls?: boolean }): T;
   /**
    * Get the last value of the sublists.
    * @category List
@@ -714,11 +759,11 @@ export interface ListFunctions<T> {
   slice(offset: number, length: number): T;
   /**
    * Sort the sublists.
-   * @param reverse - Sort in reverse order.
+   * @param descending - Sort in reverse order.
    * @category List
    */
-  sort(reverse?: boolean): T;
-  sort(opt: { reverse: boolean }): T;
+  sort(descending?: boolean): T;
+  sort(opt: { descending: boolean }): T;
   /**
    * Sum all elements of the sublists.
    * @category List
@@ -796,7 +841,7 @@ export interface DateFunctions<T> {
    */
   second(): T;
   /**
-   * Format Date/datetime with a formatting rule: See [chrono strftime/strptime](https://docs.rs/chrono/0.4.19/chrono/format/strftime/index.html).
+   * Format Date/datetime with a formatting rule: See [chrono strftime/strptime](https://docs.rs/chrono/0.4.41/chrono/format/strftime/index.html).
    */
   strftime(fmt: string): T;
   /** Return timestamp in ms as Int64 type. */
@@ -826,6 +871,225 @@ export interface DateFunctions<T> {
    * @returns Year as Int32
    */
   year(): T;
+  /**
+   * Divide the date/datetime range into buckets.
+   * Each date/datetime is mapped to the start of its bucket using the corresponding local datetime. Note that:
+
+    - Weekly buckets start on Monday.
+    - All other buckets start on the Unix epoch (1970-01-01).
+    - Ambiguous results are localised using the DST offset of the original
+      timestamp - for example, truncating `'2022-11-06 01:30:00 CST'` by
+      `'1h'` results in `'2022-11-06 01:00:00 CST'`, whereas truncating
+      `'2022-11-06 01:30:00 CDT'` by `'1h'` results in
+      `'2022-11-06 01:00:00 CDT'`.
+
+    Parameters
+    ----------
+    @param every - The size of each bucket.
+
+    Notes
+    -----
+    The `every` argument is created with
+    the following string language:
+
+    - 1ns   (1 nanosecond)
+    - 1us   (1 microsecond)
+    - 1ms   (1 millisecond)
+    - 1s    (1 second)
+    - 1m    (1 minute)
+    - 1h    (1 hour)
+    - 1d    (1 calendar day)
+    - 1w    (1 calendar week)
+    - 1mo   (1 calendar month)
+    - 1q    (1 calendar quarter)
+    - 1y    (1 calendar year)
+
+    By "calendar day", we mean the corresponding time on the next day (which may
+    not be 24 hours, due to daylight savings). Similarly for "calendar week",
+    "calendar month", "calendar quarter", and "calendar year".
+
+    @returns Expr Expression of data type :class:`Date` or :class:`Datetime`.
+    @example
+    --------
+    const df = pl.DataFrame([
+      pl.Series("datetime", [
+        new Date(Date.parse("2020-01-01T01:32:00.002+00:00")),
+        new Date(Date.parse("2020-01-01T02:02:01.030+00:00")),
+        new Date(Date.parse("2020-01-01T04:42:20.001+00:00")),
+      ])]);
+    
+    >>> df.select("datetime", pl.col("datetime").dt.truncate("1h").alias("hr0"));
+    shape: (3, 2)
+    ┌─────────────────────────┬─────────────────────┐
+    │ datetime                ┆ hr0                 │
+    │ ---                     ┆ ---                 │
+    │ datetime[ms]            ┆ datetime[ms]        │
+    ╞═════════════════════════╪═════════════════════╡
+    │ 2020-01-01 01:32:00.002 ┆ 2020-01-01 01:00:00 │
+    │ 2020-01-01 02:02:01.030 ┆ 2020-01-01 02:00:00 │
+    │ 2020-01-01 04:42:20.001 ┆ 2020-01-01 04:00:00 │
+    └─────────────────────────┴─────────────────────┘
+    >>> df.select("datetime", pl.col("datetime").dt.truncate("30m").alias("hr30m"));
+    shape: (3, 2)
+    ┌─────────────────────────┬─────────────────────┐
+    │ datetime                ┆ hr30m               │
+    │ ---                     ┆ ---                 │
+    │ datetime[ms]            ┆ datetime[ms]        │
+    ╞═════════════════════════╪═════════════════════╡
+    │ 2020-01-01 01:32:00.002 ┆ 2020-01-01 01:30:00 │
+    │ 2020-01-01 02:02:01.030 ┆ 2020-01-01 02:00:00 │
+    │ 2020-01-01 04:42:20.001 ┆ 2020-01-01 04:30:00 │
+    └─────────────────────────┴─────────────────────┘
+   */
+  truncate(every: string | Expr): T;
+  /**
+   * Divide the date/datetime range into buckets.
+    - Each date/datetime in the first half of the interval is mapped to the start of its bucket.
+    - Each date/datetime in the second half of the interval is mapped to the end of its bucket.
+    - Half-way points are mapped to the start of their bucket.
+
+    Ambiguous results are localised using the DST offset of the original timestamp -
+    for example, rounding `'2022-11-06 01:20:00 CST'` by `'1h'` results in
+    `'2022-11-06 01:00:00 CST'`, whereas rounding `'2022-11-06 01:20:00 CDT'` by
+    `'1h'` results in `'2022-11-06 01:00:00 CDT'`.
+
+    @param every - Every interval start and period length
+    @returns Expr Expression of data type :class:`Date` or :class:`Datetime`.
+
+    Notes
+    -----
+    The `every` argument is created with the following small string formatting language:
+    - 1ns   (1 nanosecond)
+    - 1us   (1 microsecond)
+    - 1ms   (1 millisecond)
+    - 1s    (1 second)
+    - 1m    (1 minute)
+    - 1h    (1 hour)
+    - 1d    (1 calendar day)
+    - 1w    (1 calendar week)
+    - 1mo   (1 calendar month)
+    - 1q    (1 calendar quarter)
+    - 1y    (1 calendar year)
+
+    By "calendar day", we mean the corresponding time on the next day (which may not be 24 hours, due to daylight savings). 
+    Similarly for "calendar week", "calendar month", "calendar quarter", and "calendar year".
+
+    @example
+    --------
+    const df = pl.DataFrame([
+      pl.Series("datetime", [
+        new Date(Date.parse("2020-01-01T01:30:00.002+00:00")),
+        new Date(Date.parse("2020-01-01T02:02:01.030+00:00")),
+        new Date(Date.parse("2020-01-01T04:42:20.001+00:00")),
+      ])]);
+    
+    >>> df.select("datetime", pl.col("datetime").dt.round("1h").alias("hr0"));
+    shape: (3, 2)
+    ┌─────────────────────────┬─────────────────────┐
+    │ datetime                ┆ hr0                 │
+    │ ---                     ┆ ---                 │
+    │ datetime[ms]            ┆ datetime[ms]        │
+    ╞═════════════════════════╪═════════════════════╡
+    │ 2020-01-01 01:30:00.002 ┆ 2020-01-01 02:00:00 │
+    │ 2020-01-01 02:02:01.030 ┆ 2020-01-01 02:00:00 │
+    │ 2020-01-01 04:42:20.001 ┆ 2020-01-01 05:00:00 │
+    └─────────────────────────┴─────────────────────┘
+    >>> df.select("datetime", pl.col("datetime").dt.round("30m").alias("hr30m"));
+    shape: (3, 2)
+    ┌─────────────────────────┬─────────────────────┐
+    │ datetime                ┆ hr30m               │
+    │ ---                     ┆ ---                 │
+    │ datetime[ms]            ┆ datetime[ms]        │
+    ╞═════════════════════════╪═════════════════════╡
+    │ 2020-01-01 01:32:00.002 ┆ 2020-01-01 01:30:00 │
+    │ 2020-01-01 02:02:01.030 ┆ 2020-01-01 02:00:00 │
+    │ 2020-01-01 04:42:20.001 ┆ 2020-01-01 05:00:00 │
+    └─────────────────────────┴─────────────────────┘
+   */
+  round(every: string | Expr): T;
+  /***
+    Convert to given time zone for an expression of type Datetime.
+    @param timeZone Time zone for the `Datetime` expression.
+    @returns Expr Expression of data type `Datetime` with the given time zone.
+    @example
+    --------
+    >>> DataFrame([
+      Series("london_timezone", [new Date(Date.UTC(2026, 0, 1, 6, 0, 0))],DataType.Datetime("us"),).dt.replaceTimeZone("Europe/London"),
+    ]).select([
+      pl.col("london_timezone"),
+      pl.col("london_timezone").dt.convertTimeZone("Europe/Amsterdam").alias("London_to_Amsterdam"),
+    ]);
+    shape: (1, 2)
+    ┌─────────────────────────────┬────────────────────────────────┐
+    │ london_timezone             ┆ London_to_Amsterdam            │
+    │ ---                         ┆ ---                            │
+    │ datetime[μs, Europe/London] ┆ datetime[μs, Europe/Amsterdam] │
+    ╞═════════════════════════════╪════════════════════════════════╡
+    │ 2026-01-01 06:00:00 GMT     ┆ 2026-01-01 07:00:00 CET        │
+    └─────────────────────────────┴────────────────────────────────┘
+  */
+  convertTimeZone(timeZone: string): T;
+  /**
+   * Replace time zone for an expression of type Datetime.
+   * @param timeZone - Time zone for the `Datetime` expression. Pass `null` to unset time zone.
+   * @param ambiguous - Determine how to deal with ambiguous datetimes:
+            - `'raise'` (default): raise
+            - `'earliest'`: use the earliest datetime
+            - `'latest'`: use the latest datetime
+            - `'null'`: set to null
+   * @param nonExistent - Determine how to deal with non-existent datetimes:
+            - `'raise'` (default): raise
+            - `'null'`: set to null
+   * @example
+   * ```
+    DataFrame([
+        Series("london_timezone", [new Date(Date.UTC(2026, 0, 1, 6, 0, 0))],DataType.Datetime("us")).dt.replaceTimeZone("Europe/London")
+      ]).select([ pl.col("london_timezone"),
+                  pl.col("london_timezone").dt.replaceTimeZone("Europe/Amsterdam").alias("London_to_Amsterdam")]);
+
+    shape: (1, 2)
+    ┌─────────────────────────────┬────────────────────────────────┐
+    │ london_timezone             ┆ London_to_Amsterdam            │
+    │ ---                         ┆ ---                            │
+    │ datetime[μs, Europe/London] ┆ datetime[μs, Europe/Amsterdam] │
+    ╞═════════════════════════════╪════════════════════════════════╡
+    │ 2026-01-01 06:00:00 GMT     ┆ 2026-01-01 06:00:00 CET        │
+    └─────────────────────────────┴────────────────────────────────┘
+
+    You can use `ambiguous` to deal with ambiguous datetimes:
+
+    >>> const dates = [
+    ...     "2018-10-28 01:30",
+    ...     "2018-10-28 02:00",
+    ...     "2018-10-28 02:30",
+    ...     "2018-10-28 02:00",
+    ... ];
+
+    pl.DataFrame(
+     {
+         "ts": pl.Series(dates).str.strptime(pl.Datetime),
+         "ambiguous": ["earliest", "earliest", "latest", "latest"],
+     }).withColumns(
+        pl.col("ts").dt.replaceTimeZone( "Europe/Brussels", pl.col("ambiguous")).alias("ts_localized")
+      );
+
+    shape: (4, 3)
+    ┌─────────────────────┬───────────┬───────────────────────────────┐
+    │ ts                  ┆ ambiguous ┆ ts_localized                  │
+    │ ---                 ┆ ---       ┆ ---                           │
+    │ datetime[μs]        ┆ str       ┆ datetime[μs, Europe/Brussels] │
+    ╞═════════════════════╪═══════════╪═══════════════════════════════╡
+    │ 2018-10-28 01:30:00 ┆ earliest  ┆ 2018-10-28 01:30:00 CEST      │
+    │ 2018-10-28 02:00:00 ┆ earliest  ┆ 2018-10-28 02:00:00 CEST      │
+    │ 2018-10-28 02:30:00 ┆ latest    ┆ 2018-10-28 02:30:00 CET       │
+    │ 2018-10-28 02:00:00 ┆ latest    ┆ 2018-10-28 02:00:00 CET       │
+    └─────────────────────┴───────────┴───────────────────────────────┘
+  */
+  replaceTimeZone(
+    timeZone: string,
+    ambiguous?: string | Expr,
+    nonExistent?: string,
+  ): T;
 }
 
 export interface StringFunctions<T> {
@@ -847,8 +1111,34 @@ export interface StringFunctions<T> {
    * ```
    */
   concat(delimiter: string, ignoreNulls?: boolean): T;
-  /** Check if strings in Series contain regex pattern. */
-  contains(pat: string | RegExp): T;
+  /**
+   * Check if strings in Series contain a substring that matches a pattern.
+   * @param pat A valid regular expression pattern, compatible with the `regex crate
+   * @param literal Treat `pattern` as a literal string, not as a regular expression.
+   * @param strict Raise an error if the underlying pattern is not a valid regex, otherwise mask out with a null value.
+   * @returns Boolean mask
+   * @example
+   * ```
+   * const df = pl.DataFrame({"txt": ["Crab", "cat and dog", "rab$bit", null]})
+   * df.select(
+   * ...     pl.col("txt"),
+   * ...     pl.col("txt").str.contains("cat|bit").alias("regex"),
+   * ...     pl.col("txt").str.contains("rab$", true).alias("literal"),
+   * ... )
+   * shape: (4, 3)
+   * ┌─────────────┬───────┬─────────┐
+   * │ txt         ┆ regex ┆ literal │
+   * │ ---         ┆ ---   ┆ ---     │
+   * │ str         ┆ bool  ┆ bool    │
+   * ╞═════════════╪═══════╪═════════╡
+   * │ Crab        ┆ false ┆ false   │
+   * │ cat and dog ┆ true  ┆ false   │
+   * │ rab$bit     ┆ true  ┆ true    │
+   * │ null        ┆ null  ┆ null    │
+   * └─────────────┴───────┴─────────┘
+   * ```
+   */
+  contains(pat: string | RegExp | Expr, literal: boolean, strict: boolean): T;
   /**
    * Decodes a value using the provided encoding
    * @param encoding - hex | base64
@@ -900,7 +1190,7 @@ export interface StringFunctions<T> {
   encode(encoding: "hex" | "base64"): T;
   /**
    * Extract the target capture group from provided patterns.
-   * @param pattern A valid regex pattern
+   * @param pat A valid regex pattern
    * @param groupIndex Index of the targeted capture group.
    * Group 0 mean the whole pattern, first group begin at index 1
    * Default to the first capture group
@@ -934,7 +1224,7 @@ export interface StringFunctions<T> {
    * Throw errors if encounter invalid json strings.
    * All return value will be casted to Utf8 regardless of the original value.
    * @see https://goessner.net/articles/JsonPath/
-   * @param jsonPath - A valid JSON path query string
+   * @param pat - A valid JSON path query string
    * @returns Utf8 array. Contain null if original value is null or the `jsonPath` return nothing.
    * @example
    * ```
@@ -982,8 +1272,8 @@ export interface StringFunctions<T> {
   slice(start: number, length?: number): T;
   /**
    * Split a string into substrings using the specified separator and return them as a Series.
-   * @param separator — A string that identifies character or characters to use in separating the string.
-   * @param inclusive Include the split character/string in the results
+   * @param by — A string that identifies character or characters to use in separating the string.
+   * @param options.inclusive Include the split character/string in the results
    */
   split(by: string, options?: { inclusive?: boolean } | boolean): T;
   /** Remove leading and trailing whitespace. */
@@ -993,7 +1283,10 @@ export interface StringFunctions<T> {
    * @param datatype Date or Datetime.
    * @param fmt formatting syntax. [Read more](https://docs.rs/chrono/0.4.19/chrono/format/strftime/index.html)
    */
-  strptime(datatype: DataType.Date | DataType.Datetime, fmt?: string): T;
+  strptime(
+    datatype: DataType.Date | DataType.Datetime | typeof DataType.Datetime,
+    fmt?: string,
+  ): T;
 }
 
 export interface Serialize {
@@ -1005,6 +1298,7 @@ export interface Serialize {
    */
   serialize(format: "json" | "bincode"): Buffer;
 }
+
 export interface Deserialize<T> {
   /**
    * De-serializes buffer via [serde](https://serde.rs/)
@@ -1049,24 +1343,16 @@ export interface GroupByOps<T> {
     - "10i"     # length 10
 
 
-    @param indexColumn Column used to group based on the time window.
+    @param opts.indexColumn Column used to group based on the time window.
     Often to type Date/Datetime
     This column must be sorted in ascending order. If not the output will not make sense.
 
     In case of a rolling groupby on indices, dtype needs to be one of {Int32, Int64}. Note that
     Int32 gets temporarily cast to Int64, so if performance matters use an Int64 column.
-    @param period length of the window
-    @param offset offset of the window. Default is `-period`
-    @param closed Defines if the window interval is closed or not.
-    @param check_sorted
-            When the ``by`` argument is given, polars can not check sortedness
-            by the metadata and has to do a full scan on the index column to
-            verify data is sorted. This is expensive. If you are sure the
-            data within the by groups is sorted, you can set this to ``False``.
-            Doing so incorrectly will lead to incorrect output
-
-    Any of `{"left", "right", "both" "none"}`
-    @param by Also group by this column/these columns
+    @param opts.period length of the window
+    @param opts.offset offset of the window. Default is `-period`
+    @param opts.closed Defines if the window interval is closed or not. Any of `{"left", "right", "both" "none"}`
+    @param opts.by Also group by this column/these columns
 
     @example
     ```
@@ -1119,7 +1405,6 @@ export interface GroupByOps<T> {
     period: string;
     offset?: string;
     closed?: "left" | "right" | "both" | "none";
-    check_sorted?: boolean;
   }): T;
 
   /**
@@ -1158,37 +1443,31 @@ export interface GroupByOps<T> {
 
   Parameters
   ----------
-  @param index_column Column used to group based on the time window.
+  @param options.indexColumn Column used to group based on the time window.
       Often to type Date/Datetime
       This column must be sorted in ascending order. If not the output will not make sense.
 
       In case of a dynamic groupby on indices, dtype needs to be one of {Int32, Int64}. Note that
       Int32 gets temporarily cast to Int64, so if performance matters use an Int64 column.
-  @param every interval of the window
-  @param period length of the window, if None it is equal to 'every'
-  @param offset offset of the window if None and period is None it will be equal to negative `every`
-  @param truncate truncate the time value to the window lower bound
-  @param includeBoundaries add the lower and upper bound of the window to the "_lower_bound" and "_upper_bound" columns. This will impact performance because it's harder to parallelize
-  @param closed Defines if the window interval is closed or not.
-      Any of {"left", "right", "both" "none"}
-  @param check_sorted
-      When the ``by`` argument is given, polars can not check sortedness
-      by the metadata and has to do a full scan on the index column to
-      verify data is sorted. This is expensive. If you are sure the
-      data within the by groups is sorted, you can set this to ``False``.
-      Doing so incorrectly will lead to incorrect output
-  @param by Also group by this column/these columns
+  @param options.every interval of the window
+  @param options.period length of the window, if None it is equal to 'every'
+  @param options.offset offset of the window if None and period is None it will be equal to negative `every`
+  @param options.label Define which label to use for the window: Any if {'left', 'right', 'datapoint'}
+  @param options.includeBoundaries add the lower and upper bound of the window to the "_lower_bound" and "_upper_bound" columns. This will impact performance because it's harder to parallelize
+  @param options.closed Defines if the window interval is closed or not. Any of {"left", "right", "both" "none"}
+  @param options.by Also group by this column/these columns
+  @param options.startBy The strategy to determine the start of the first window by. Any of {'window', 'datapoint', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'}
  */
   groupByDynamic(options: {
     indexColumn: string;
     every: string;
     period?: string;
     offset?: string;
+    label?: string;
     includeBoundaries?: boolean;
     closed?: "left" | "right" | "both" | "none";
     by?: ColumnsOrExpr;
-    start_by: StartBy;
-    check_sorted?: boolean;
+    startBy?: StartBy;
   }): T;
 }
 
@@ -1209,7 +1488,7 @@ export interface EwmOps<T> {
    *       - When ``ignoreNulls: false`` (default), weights are based on absolute positions.
    *       - When ``ignoreNulls: true``, weights are based on relative positions.
    * @returns Expr that evaluates to a float 64 Series.
-   * @examples
+   * @example
    * ```
    * > const df = pl.DataFrame({a: [1, 2, 3]});
    * > df.select(pl.col("a").ewmMean())
@@ -1225,7 +1504,6 @@ export interface EwmOps<T> {
    * └──────────┘
    * ```
    */
-  ewmMean(): T;
   ewmMean(
     alpha?: number,
     adjust?: boolean,
@@ -1240,6 +1518,7 @@ export interface EwmOps<T> {
     bias?: boolean;
     ignoreNulls?: boolean;
   }): T;
+  ewmMean(): T;
   /**
    * Exponentially-weighted standard deviation.
    *
@@ -1254,7 +1533,7 @@ export interface EwmOps<T> {
    *         For example, the weights of :math:`x_0` and :math:`x_2` used in calculating the final weighted average of
    *       - When ``ignoreNulls: true``, weights are based on relative positions.
    * @returns Expr that evaluates to a float 64 Series.
-   * @examples
+   * @example
    * ```
    * > const df = pl.DataFrame({a: [1, 2, 3]});
    * > df.select(pl.col("a").ewmStd())
@@ -1270,7 +1549,6 @@ export interface EwmOps<T> {
    * └──────────┘
    * ```
    */
-  ewmStd(): T;
   ewmStd(
     alpha?: number,
     adjust?: boolean,
@@ -1285,6 +1563,7 @@ export interface EwmOps<T> {
     bias?: boolean;
     ignoreNulls?: boolean;
   }): T;
+  ewmStd(): T;
   /**
    * Exponentially-weighted variance.
    *
@@ -1298,7 +1577,7 @@ export interface EwmOps<T> {
    *       - When ``ignoreNulls: false`` (default), weights are based on absolute positions.
    *       - When ``ignoreNulls=true``, weights are based on relative positions.
    * @returns Expr that evaluates to a float 64 Series.
-   * @examples
+   * @example
    * ```
    * > const df = pl.DataFrame({a: [1, 2, 3]});
    * > df.select(pl.col("a").ewmVar())
@@ -1314,7 +1593,6 @@ export interface EwmOps<T> {
    * └──────────┘
    * ```
    */
-  ewmVar(): T;
   ewmVar(
     alpha?: number,
     adjust?: boolean,
@@ -1329,4 +1607,5 @@ export interface EwmOps<T> {
     bias?: boolean;
     ignoreNulls?: boolean;
   }): T;
+  ewmVar(): T;
 }

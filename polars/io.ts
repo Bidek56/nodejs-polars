@@ -1,13 +1,15 @@
+import { type Readable, Stream } from "node:stream";
+import { _DataFrame, type DataFrame } from "./dataframe";
 import type { DataType } from "./datatypes";
-import pli from "./internals/polars_internal";
-import { type DataFrame, _DataFrame } from "./dataframe";
-import { isPath } from "./utils";
-import { type LazyDataFrame, _LazyDataFrame } from "./lazy/dataframe";
-import { type Readable, Stream } from "stream";
 import { concat } from "./functions";
+import pli from "./internals/polars_internal";
+import { _LazyDataFrame, type LazyDataFrame } from "./lazy/dataframe";
+import type { ReadParquetOptions, RowCount, ScanParquetOptions } from "./types";
+import { isPath } from "./utils";
 
 export interface ReadCsvOptions {
   inferSchemaLength: number | null;
+  batchSize: number;
   nRows: number;
   hasHeader: boolean;
   ignoreErrors: boolean;
@@ -21,9 +23,8 @@ export interface ReadCsvOptions {
   encoding: "utf8" | "utf8-lossy";
   numThreads: number;
   dtypes: Record<string, DataType>;
-  sampleSize: number;
   lowMemory: boolean;
-  commentChar: string;
+  commentPrefix: string;
   quoteChar: string;
   eolChar: string;
   nullValues: string | Array<string> | Record<string, string>;
@@ -31,7 +32,7 @@ export interface ReadCsvOptions {
   skipRows: number;
   tryParseDates: boolean;
   skipRowsAfterHeader: number;
-  rowCount: any;
+  rowCount: RowCount;
   raiseIfEmpty: boolean;
   truncateRaggedLines: boolean;
   missingIsNull: boolean;
@@ -39,12 +40,13 @@ export interface ReadCsvOptions {
 
 const readCsvDefaultOptions: Partial<ReadCsvOptions> = {
   inferSchemaLength: 100,
+  batchSize: 8192,
   hasHeader: true,
   ignoreErrors: true,
   chunkSize: 10000,
   skipRows: 0,
-  sampleSize: 1024,
   sep: ",",
+  quoteChar: '"',
   rechunk: false,
   encoding: "utf8",
   lowMemory: false,
@@ -168,8 +170,8 @@ export function readRecords(
  * @param options.dtype -Overwrite the dtypes during inference.
  * @param options.schema -Set the CSV file's schema. This only accepts datatypes that are implemented in the csv parser and expects a complete Schema.
  * @param options.lowMemory - Reduce memory usage in expense of performance.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
- * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
+ * @param options.quoteChar - Character that is used for csv quoting, Default: '"'. Set to null to turn special handling and escaping of quotes off.
  * @param options.nullValues - Values to interpret as null values. You can provide a
  *     - `string` -> all values encountered equal to this string will be null
  *     - `Array<string>` -> A null value per column.
@@ -184,6 +186,9 @@ export function readCSV(
 export function readCSV(pathOrBody, options?) {
   options = { ...readCsvDefaultOptions, ...options };
   const extensions = [".tsv", ".csv"];
+
+  // Handle If set to `null` case
+  options.inferSchemaLength = options.inferSchemaLength ?? 0;
 
   if (Buffer.isBuffer(pathOrBody)) {
     return _DataFrame(pli.readCsv(pathOrBody, options));
@@ -203,7 +208,7 @@ export function readCSV(pathOrBody, options?) {
 export interface ScanCsvOptions {
   hasHeader: boolean;
   sep: string;
-  commentChar: string;
+  commentPrefix: string;
   quoteChar: string;
   skipRows: number;
   nullValues: string | Array<string> | Record<string, string>;
@@ -230,6 +235,8 @@ const scanCsvDefaultOptions: Partial<ScanCsvOptions> = {
   ignoreErrors: true,
   skipRows: 0,
   sep: ",",
+  quoteChar: '"',
+  eolChar: "\n",
   rechunk: false,
   encoding: "utf8",
   lowMemory: false,
@@ -248,8 +255,8 @@ const scanCsvDefaultOptions: Partial<ScanCsvOptions> = {
  * @param options.hasHeader - Indicate if first row of dataset is header or not. If set to False first row will be set to `column_x`,
  *     `x` being an enumeration over every column in the dataset.
  * @param options.sep -Character to use as delimiter in the file.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
- * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
+ * @param options.quoteChar -character that is used for csv quoting. Default: '"'. Set to null to turn special handling and escaping of quotes off.
  * @param options.skipRows -Start reading after `skipRows` position.
  * @param options.nullValues - Values to interpret as null values. You can provide a
  *     - `string` -> all values encountered equal to this string will be null
@@ -274,6 +281,8 @@ export function scanCSV(
 export function scanCSV(path, options?) {
   options = { ...scanCsvDefaultOptions, ...options };
 
+  // Handle If set to `null` case
+  options.inferSchemaLength = options.inferSchemaLength ?? 0;
   return _LazyDataFrame(pli.scanCsv(path, options));
 }
 /**
@@ -285,16 +294,16 @@ export function scanCSV(path, options?) {
  * @param options
  * @param options.inferSchemaLength -Maximum number of lines to read to infer schema. If set to 0, all columns will be read as pl.Utf8.
  *    If set to `null`, a full table scan will be done (slow).
- * @param options.jsonFormat - Either "lines" or "json"
+ * @param options.format - Either "lines" or "json"
  * @param options.batchSize - Number of lines to read into the buffer at once. Modify this to change performance.
  * @returns ({@link DataFrame})
  * @example
  * ```
  * const jsonString = `
- * {"a", 1, "b", "foo", "c": 3}
+ * {"a": 1, "b": "foo", "c": 3}
  * {"a": 2, "b": "bar", "c": 6}
  * `
- * > const df = pl.readJSON(jsonString)
+ * > const df = pl.readJSON(jsonString, {"format": "lines"})
  * > console.log(df)
  *   shape: (2, 3)
  * ╭─────┬─────┬─────╮
@@ -319,6 +328,10 @@ export function readJSON(
   options = { ...readJsonDefaultOptions, ...options };
   const method = options.format === "lines" ? pli.readJsonLines : pli.readJson;
   const extensions = [".ndjson", ".json", ".jsonl"];
+
+  // Handle If set to `null` case
+  options.inferSchemaLength = options.inferSchemaLength ?? 0;
+
   if (Buffer.isBuffer(pathOrBody)) {
     return _DataFrame(pli.readJson(pathOrBody, options));
   }
@@ -381,19 +394,14 @@ export function scanJson(
 export function scanJson(path: string, options?: Partial<ScanJsonOptions>) {
   options = { ...readJsonDefaultOptions, ...options };
 
+  // Handle If set to `null` case
+  options.inferSchemaLength = options.inferSchemaLength ?? 0;
   return _LazyDataFrame(pli.scanJson(path, options));
-}
-
-interface ReadParquetOptions {
-  columns: string[] | number[];
-  numRows: number;
-  parallel: "auto" | "columns" | "row_groups" | "none";
-  rowCount: RowCount;
 }
 
 /**
    * Read into a DataFrame from a parquet file.
-   * @param pathOrBuffer
+   * @param pathOrBody
    * Path to a file, list of files, or a file like object. If the path is a directory, that directory will be used
    * as partition aware scan.
    * @param options.columns Columns to select. Accepts a list of column indices (starting at zero) or a list of column names.
@@ -470,7 +478,7 @@ export interface ReadAvroOptions {
 
 /**
  * Read into a DataFrame from an avro file.
- * @param pathOrBuffer
+ * @param pathOrBody
  * Path to a file, list of files, or a file like object. If the path is a directory, that directory will be used
  * as partition aware scan.
  * @param options.columns Columns to select. Accepts a list of column names.
@@ -496,24 +504,6 @@ export function readAvro(pathOrBody, options = {}) {
   throw new Error("must supply either a path or body");
 }
 
-interface RowCount {
-  name: string;
-  offset: string;
-}
-
-interface ScanParquetOptions {
-  nRows?: number;
-  cache?: boolean;
-  parallel?: "auto" | "columns" | "row_groups" | "none";
-  rowCount?: RowCount;
-  rechunk?: boolean;
-  lowMemory?: boolean;
-  useStatistics?: boolean;
-  hivePartitioning?: boolean;
-  cloudOptions?: Map<string, string>;
-  retries?: number;
-}
-
 /**
  * Lazily read from a local or cloud-hosted parquet file (or files).
 
@@ -530,10 +520,14 @@ interface ScanParquetOptions {
         This determines the direction of parallelism. 'auto' will try to determine the optimal direction.
    @param options.useStatistics - Use statistics in the parquet to determine if pages can be skipped from reading.
    @param options.hivePartitioning - Infer statistics and schema from hive partitioned URL and use them to prune reads.
+   @param options.glob - Expand path given via globbing rules.
+   @param options.hiveSchema - The column names and data types of the columns by which the data is partitioned.
+        If set to `None` (default), the schema of the Hive partitions is inferred.
+   @param options.tryParseHiveDates - Whether to try parsing hive values as date/datetime types.
    @param options.rechunk - In case of reading multiple files via a glob pattern rechunk the final DataFrame into contiguous memory chunks.
    @param options.lowMemory - Reduce memory pressure at the expense of performance.
    @param options.cache - Cache the result after reading.
-   @param options.storageOptions - Options that indicate how to connect to a cloud provider.
+   @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
         If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
 
         The cloud providers currently supported are AWS, GCP, and Azure.
@@ -543,8 +537,20 @@ interface ScanParquetOptions {
         * `gcp <https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html>`_
         * `azure <https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html>`_
 
-        If `storage_options` is not provided, Polars will try to infer the information from environment variables.
-    @param retries - Number of retries if accessing a cloud instance fails.
+        If `cloudOptions` is not provided, Polars will try to infer the information from environment variables.
+    @param options.includeFilePaths - Include the path of the source file(s) as a column with this name.
+
+    @example
+    ```
+      const lazyDf = pl.scanParquet("s3://[bucket-name]/[file-key]", {
+          cloudOptions: {
+              aws_access_key_id: credentials.accessKeyId,
+              aws_secret_access_key: credentials.secretAccessKey,
+              aws_session_token: credentials.sessionToken,
+              aws_region: "us-east-1",
+          },
+      });
+    ```
  */
 export function scanParquet(source: string, options: ScanParquetOptions = {}) {
   const defaultOptions = { parallel: "auto" };
@@ -558,7 +564,7 @@ export interface ReadIPCOptions {
 }
 
 /**
- * __Read into a DataFrame from Arrow IPC (Feather v2) file.__
+ * __Read into a DataFrame from Arrow IPC file (Feather v2).__
  * ___
  * @param pathOrBody - path or buffer or string
  *   - path: Path to a file or a file like string. Any valid filepath can be used. Example: `file.ipc`.
@@ -585,6 +591,36 @@ export function readIPC(pathOrBody, options = {}) {
   throw new Error("must supply either a path or body");
 }
 
+/**
+ * __Read into a DataFrame from Arrow IPC stream.__
+ * ___
+ * @param pathOrBody - path or buffer or string
+ *   - path: Path to a file or a file like string. Any valid filepath can be used. Example: `file.ipc`.
+ *   - body: String or buffer to be read as Arrow IPC
+ * @param options.columns Columns to select. Accepts a list of column names.
+ * @param options.nRows Stop reading from parquet file after reading ``nRows``.
+ */
+export function readIPCStream(
+  pathOrBody: string | Buffer,
+  options?: Partial<ReadIPCOptions>,
+): DataFrame;
+export function readIPCStream(pathOrBody, options = {}) {
+  if (Buffer.isBuffer(pathOrBody)) {
+    return _DataFrame(pli.readIpcStream(pathOrBody, options));
+  }
+
+  if (typeof pathOrBody === "string") {
+    const inline = !isPath(pathOrBody, [".ipc"]);
+    if (inline) {
+      return _DataFrame(
+        pli.readIpcStream(Buffer.from(pathOrBody, "utf-8"), options),
+      );
+    }
+    return _DataFrame(pli.readIpcStream(pathOrBody, options));
+  }
+  throw new Error("must supply either a path or body");
+}
+
 export interface ScanIPCOptions {
   nRows: number;
   cache: boolean;
@@ -592,7 +628,7 @@ export interface ScanIPCOptions {
 }
 
 /**
- * __Lazily read from an Arrow IPC (Feather v2) file or multiple files via glob patterns.__
+ * __Lazily read from an Arrow IPC file (Feather v2) or multiple files via glob patterns.__
  * ___
  * @param path Path to a IPC file.
  * @param options.nRows Stop reading from IPC file after reading ``nRows``
@@ -636,8 +672,8 @@ export function scanIPC(path, options = {}) {
  * @param options.numThreads -Number of threads to use in csv parsing. Defaults to the number of physical cpu's of your system.
  * @param options.dtype -Overwrite the dtypes during inference.
  * @param options.lowMemory - Reduce memory usage in expense of performance.
- * @param options.commentChar - character that indicates the start of a comment line, for instance '#'.
- * @param options.quoteChar -character that is used for csv quoting, default = ''. Set to null to turn special handling and escaping of quotes off.
+ * @param options.commentPrefix - character that indicates the start of a comment line, for instance '#'.
+ * @param options.quoteChar -character that is used for csv quoting. Default: '"'. Set to null to turn special handling and escaping of quotes off.
  * @param options.nullValues - Values to interpret as null values. You can provide a
  *     - `string` -> all values encountered equal to this string will be null
  *     - `Array<string>` -> A null value per column.
@@ -677,6 +713,7 @@ export function readCSVStream(
   options?: Partial<ReadCsvOptions>,
 ): Promise<DataFrame>;
 export function readCSVStream(stream, options?) {
+  options = { ...readCsvDefaultOptions, ...options };
   const batchSize = options?.batchSize ?? 10000;
   let count = 0;
   const end = options?.endRows ?? Number.POSITIVE_INFINITY;

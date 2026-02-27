@@ -1,42 +1,28 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.6.2/schema.json",
-  "organizeImports": {
-    "enabled": false
-  },
+  "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
   "linter": {
     "enabled": true,
     "rules": {
       "recommended": true,
       "style": {
-        "noParameterAssign": "off",
-        "useNodejsImportProtocol": "off"
+        "noParameterAssign": "off"
       },
       "suspicious": {
         "noExplicitAny": "off",
-        "noUnsafeDeclarationMerging": "off",
         "noImplicitAnyLet": "off",
         "noThenProperty": "off"
       },
       "complexity": {
-        "useLiteralKeys": "off"
+        "useLiteralKeys": "off",
+        "noArguments": "off"
       }
     },
-    "ignore": [
-      "polars/native-polars.js",
-      "./docs/*",
-      "./bin/*",
-      "**/delta/sample.table/*"
-    ]
+    "includes": ["**", "!**/polars/native-polars.js", "!docs/**/*", "!bin/**/*"]
   },
   "formatter": {
     "indentWidth": 2,
     "indentStyle": "space",
-    "ignore": [
-      "polars/native-polars.js",
-      "./docs/*",
-      "./bin/*",
-      "**/delta/sample.table/*"
-    ]
+    "includes": ["**", "!**/polars/native-polars.js", "!docs/**/*", "!bin/**/*"]
   },
   "javascript": {
     "formatter": {

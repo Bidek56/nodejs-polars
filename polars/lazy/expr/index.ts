@@ -2,37 +2,39 @@ import * as dt from "./datetime";
 import * as lst from "./list";
 import * as str from "./string";
 import * as struct from "./struct";
-export type { StringNamespace } from "./string";
-export type { ExprList as ListNamespace } from "./list";
+
 export type { ExprDateTime as DatetimeNamespace } from "./datetime";
+export type { ExprList as ListNamespace } from "./list";
+export type { ExprString as StringNamespace } from "./string";
 export type { ExprStruct as StructNamespace } from "./struct";
 
+import { isRegExp } from "node:util/types";
 import type { DataType } from "../../datatypes";
 import pli from "../../internals/polars_internal";
-import {
-  type ExprOrString,
-  selectionToExprList,
-  INSPECT_SYMBOL,
-  regexToString,
-} from "../../utils";
 import { Series } from "../../series";
 import type {
   Arithmetic,
   Comparison,
   Cumulative,
   Deserialize,
+  EwmOps,
   Rolling,
   Round,
   Sample,
   Serialize,
-  EwmOps,
 } from "../../shared_traits";
 import type {
-  InterpolationMethod,
   FillNullStrategy,
+  InterpolationMethod,
   RankMethod,
+  RoundMode,
 } from "../../types";
-import { isRegExp } from "util/types";
+import {
+  type ExprOrString,
+  INSPECT_SYMBOL,
+  regexToString,
+  selectionToExprList,
+} from "../../utils";
 /**
  * Expressions that can be used in various contexts.
  */
@@ -48,12 +50,14 @@ export interface Expr
   _expr: any;
   /**
    * Datetime namespace
+   * @deprecated *since 0.23.0 use .dt instead to match Polars core
    */
   get date(): dt.ExprDateTime;
+  get dt(): dt.ExprDateTime;
   /**
    * String namespace
    */
-  get str(): str.StringNamespace;
+  get str(): str.ExprString;
   /**
    * List namespace
    */
@@ -69,6 +73,37 @@ export interface Expr
   toJSON(): string;
   /** Take absolute values */
   abs(): Expr;
+  /**
+   * Get the group indexes of the group by operation.
+   * Should be used in aggregation context only.
+   * @deprecated use: df.withRowIndex().groupBy(...).agg(pl.col('index'))` instead.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame(
+    ...     {
+    ...         "group": [
+    ...             "one",
+    ...             "one",
+    ...             "one",
+    ...             "two",
+    ...             "two",
+    ...             "two",
+    ...         ],
+    ...         "value": [94, 95, 96, 97, 97, 99],
+    ...     }
+    ... )
+    >>> df.group_by("group", maintainOrder=True).agg(pl.col("value").aggGroups())
+    shape: (2, 2)
+    ┌───────┬───────────┐
+    │ group ┆ value     │
+    │ ---   ┆ ---       │
+    │ str   ┆ list[u32] │
+    ╞═══════╪═══════════╡
+    │ one   ┆ [0, 1, 2] │
+    │ two   ┆ [3, 4, 5] │
+    └───────┴───────────┘
+   *```
+   */
   aggGroups(): Expr;
   /**
    * Rename the output of an expression.
@@ -112,23 +147,153 @@ export interface Expr
    *```
    */
   alias(name: string): Expr;
+  /**
+     Method equivalent of bitwise "and" operator `expr & other & ...`.
+     This has the effect of combining logical boolean expressions, but operates bitwise on integers.
+     @param other One or more integer or boolean expressions to evaluate/combine.
+     @example
+     ```
+      const df = pl.DataFrame({ a: [1, 2, 3], b: [4, 5, 6] },{ schema: { a: pl.Int16, b: pl.Int16 } },);
+      df.select(pl.col("a").and(pl.col("b")).alias("a_and_b"));
+      shape: (3, 1)
+      ┌────────┐
+      │ a_or_b │
+      │ ---    │
+      │ i16    │
+      ╞════════╡
+      │ 0      │
+      │ 0      │
+      │ 2      │
+      └────────┘
+     ```
+   */
   and(other: any): Expr;
+  /**
+   * Compute the element-wise value for the inverse cosine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+      >>> const df = pl.DataFrame({"a": [0.0]})
+      >>> df.select(pl.col("a").acrcos())
+      shape: (1, 1)
+      ┌──────────┐
+      │ a        │
+      │ ---      │
+      │ f64      │
+      ╞══════════╡
+      │ 1.570796 │
+      └──────────┘
+   * ```
+   */
+  arccos(): Expr;
+  /**
+   * Compute the element-wise value for the inverse hyperbolic cosine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+      >>> const df = pl.DataFrame({"a": [1.0]})
+      >>> df.select(pl.col("a").acrcosh())
+      shape: (1, 1)
+      ┌─────┐
+      │ a   │
+      │ --- │
+      │ f64 │
+      ╞═════╡
+      │ 0.0 │
+      └─────┘
+   * ```
+   */
+  arccosh(): Expr;
+  /**
+   * Compute the element-wise value for the inverse sine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+  >>> const df = pl.DataFrame({"a": [1.0]})
+  >>> df.select(pl.col("a").acrsin())
+  shape: (1, 1)
+  ┌──────────┐
+  │ a        │
+  │ ---      │
+  │ f64      │
+  ╞══════════╡
+  │ 1.570796 │
+  └──────────┘
+  * ```
+  */
+  arcsin(): Expr;
+  /**
+   * Compute the element-wise value for the inverse hyperbolic sine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").acrsinh())
+    shape: (1, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 0.881374 │
+    └──────────┘
+    * ```
+    */
+  arcsinh(): Expr;
+  /**
+   * Compute the element-wise value for the inverse tangent.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").arctan())
+    shape: (1, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 0.785398 │
+    └──────────┘
+   * ```
+   */
+  arctan(): Expr;
+  /**
+   * Compute the element-wise value for the inverse hyperbolic tangent.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").arctanh())
+    shape: (1, 1)
+    ┌─────┐
+    │ a   │
+    │ --- │
+    │ f64 │
+    ╞═════╡
+    │ inf │
+    └─────┘
+   * ```
+   */
+  arctanh(): Expr;
   /** Get the index of the maximal value. */
   argMax(): Expr;
   /** Get the index of the minimal value. */
   argMin(): Expr;
   /**
    * Get the index values that would sort this column.
-   * @param reverse
-   *     - false -> order from small to large.
-   *     - true -> order from large to small.
-   * @returns UInt32 Series
+   * @param descending Sort in descending (descending) order. Deault false
+     @param nullsLast  Place null values last instead of first. Deault false
+   * @returns Expression of data type :class:`UInt32`
    */
-  argSort(reverse?: boolean, maintain_order?: boolean): Expr;
+  argSort(descending?: boolean, nullsLast?: boolean): Expr;
   argSort({
-    reverse,
-    maintain_order,
-  }: { reverse?: boolean; maintain_order?: boolean }): Expr;
+    descending,
+    nullsLast,
+  }: {
+    descending?: boolean;
+    nullsLast?: boolean;
+  }): Expr;
   /** Get index of first unique value. */
   argUnique(): Expr;
   /** @see {@link Expr.alias} */
@@ -137,12 +302,108 @@ export interface Expr
   backwardFill(): Expr;
   /** Cast between data types. */
   cast(dtype: DataType, strict?: boolean): Expr;
+  /**
+   * Compute the element-wise value for the cosine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+      >>> const df = pl.DataFrame({"a": [0.0]})
+      >>> df.select(pl.col("a").cos())
+      shape: (1, 1)
+      ┌─────┐
+      │ a   │
+      │ --- │
+      │ f64 │
+      ╞═════╡
+      │ 1.0 │
+      └─────┘
+   * ```
+   */
+  cos(): Expr;
+  /**
+   * Compute the element-wise value for the hyperbolic cosine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+      >>> const df = pl.DataFrame({"a": [1.0]})
+      >>> df.select(pl.col("a").cosh())
+      shape: (1, 1)
+      ┌──────────┐
+      │ a        │
+      │ ---      │
+      │ f64      │
+      ╞══════════╡
+      │ 1.543081 │
+      └──────────┘
+   * ```
+   */
+  cosh(): Expr;
+  /**
+   * Compute the element-wise value for the cotangent.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").cot().round(2))
+    shape: (1, 1)
+    ┌──────┐
+    │ a    │
+    │ ---  │
+    │ f64  │
+    ╞══════╡
+    │ 0.64 │
+    └──────┘
+   * ```
+   */
+  cot(): Expr;
   /** Count the number of values in this expression */
   count(): Expr;
-  /** Calculate the n-th discrete difference.
-   *
+  /** Calculate the first discrete difference between shifted items.
    * @param n number of slots to shift
-   * @param nullBehavior ignore or drop
+   * @param nullBehavior How to handle null values. ignore or drop
+   * @example
+   * ```
+   * const df = pl.DataFrame({"int": [20, 10, 30, 25, 35]})
+   * df.withColumns(pl.col("int").diff())
+    shape: (5, 2)
+    ┌─────┬────────┐
+    │ int ┆ change │
+    │ --- ┆ ---    │
+    │ i64 ┆ i64    │
+    ╞═════╪════════╡
+    │ 20  ┆ null   │
+    │ 10  ┆ -10    │
+    │ 30  ┆ 20     │
+    │ 25  ┆ -5     │
+    │ 35  ┆ 10     │
+    └─────┴────────┘
+
+    >>> df.withColumns(pl.col("int").diff(n=2))
+    shape: (5, 2)
+    ┌─────┬────────┐
+    │ int ┆ change │
+    │ --- ┆ ---    │
+    │ i64 ┆ i64    │
+    ╞═════╪════════╡
+    │ 20  ┆ null   │
+    │ 10  ┆ null   │
+    │ 30  ┆ 10     │
+    │ 25  ┆ 15     │
+    │ 35  ┆ 5      │
+    └─────┴────────┘
+
+    >>> df.select(pl.col("int").diff(2,"drop").alias("diff"))
+    shape: (3, 1)
+    ┌──────┐
+    │ diff │
+    │ ---  │
+    │ i64  │
+    ╞══════╡
+    │ 10   │
+    │ 15   │
+    │ 5    │
+    └──────┘
+   * ```
    */
   diff(n: number, nullBehavior: "ignore" | "drop"): Expr;
   diff(o: { n: number; nullBehavior: "ignore" | "drop" }): Expr;
@@ -151,7 +412,6 @@ export interface Expr
    * @param other Expression to compute dot product with
    */
   dot(other: any): Expr;
-
   /**
    * Exclude certain columns from a wildcard/regex selection.
    *
@@ -197,20 +457,30 @@ export interface Expr
    */
   exclude(column: string, ...columns: string[]): Expr;
   /**
+   * Compute the exponential, element-wise.
+   * @example
+   * ``` 
+    >>> const df = pl.DataFrame({"values": [1.0, 2.0, 4.0]})
+    >>> df.select(pl.col("values").exp())
+    shape: (3, 1)
+    ┌──────────┐
+    │ values   │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 2.718282 │
+    │ 7.389056 │
+    │ 54.59815 │
+    └──────────┘
+   * ```
+   */
+  exp(): Expr;
+  /**
    * Explode a list or utf8 Series.
    *
    * This means that every item is expanded to a new row.
    */
   explode(): Expr;
-  /**
-   * Extend the Series with given number of values.
-   * @param value The value to extend the Series with. This value may be null to fill with nulls.
-   * @param n The number of values to extend.
-   * @deprecated
-   * @see {@link extendConstant}
-   */
-  extend(value: any, n: number): Expr;
-  extend(opt: { value: any; n: number }): Expr;
   /**
    * Extend the Series with given number of values.
    * @param value The value to extend the Series with. This value may be null to fill with nulls.
@@ -236,6 +506,14 @@ export interface Expr
   flatten(): Expr;
   /** Fill missing values with the latest seen values */
   forwardFill(): Expr;
+  /**
+   * Take values by index.
+   * @param index An expression that leads to a UInt32 dtyped Series.
+   */
+  gather(index: Expr | number[] | Series): Expr;
+  gather({ index }: { index: Expr | number[] | Series }): Expr;
+  /** Take every nth value in the Series and return as a new Series. */
+  gatherEvery(n: number, offset?: number): Expr;
   /** Hash the Series. */
   hash(k0?: number, k1?: number, k2?: number, k3?: number): Expr;
   hash({
@@ -243,10 +521,16 @@ export interface Expr
     k1,
     k2,
     k3,
-  }: { k0?: number; k1?: number; k2?: number; k3?: number }): Expr;
+  }: {
+    k0?: number;
+    k1?: number;
+    k2?: number;
+    k3?: number;
+  }): Expr;
   /** Take the first n values.  */
   head(length?: number): Expr;
   head({ length }: { length: number }): Expr;
+  implode(): Expr;
   inner(): any;
   /** Interpolate intermediate values. The interpolation method is linear. */
   interpolate(): Expr;
@@ -260,6 +544,7 @@ export interface Expr
    * Check if elements of this Series are in the right Series, or List values of the right Series.
    *
    * @param other Series of primitive type or List type.
+   * @param nullsEquals default False, If True, treat null as a distinct value. Null values will not propagate.
    * @returns Expr that evaluates to a Boolean Series.
    * @example
    * ```
@@ -284,7 +569,7 @@ export interface Expr
    * └──────────┘
    * ```
    */
-  isIn(other): Expr;
+  isIn(other, nullsEquals?: boolean): Expr;
   /** Create a boolean expression returning `true` where the expression values are infinite. */
   isInfinite(): Expr;
   /** Create a boolean expression returning `true` where the expression values are NaN (Not A Number). */
@@ -354,8 +639,50 @@ export interface Expr
   kurtosis({ fisher, bias }: { fisher?: boolean; bias?: boolean }): Expr;
   /** Get the last value.  */
   last(): Expr;
-  /** Aggregate to list. */
+  /** Aggregate to list.
+   * @deprecated *since 0.23.0 use implode instead to match Polars core
+   */
   list(): Expr;
+  /***
+   * Compute the natural logarithm of each element plus one.
+   * This computes `log(1 + x)` but is more numerically stable for `x` close to zero.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 3]})
+    >>> df.select(pl.col("a").log1p())
+    shape: (3, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 0.693147 │
+    │ 1.098612 │
+    │ 1.386294 │
+    └──────────┘
+   * ```
+   */
+  log1p(): Expr;
+  /**
+   * Compute the logarithm to a given base.
+   * @param base - Given base, defaults to `e`
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 3]})
+    >>> df.select(pl.col("a").log(base=2))
+    shape: (3, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 0.0      │
+    │ 1.0      │
+    │ 1.584963 │
+    └──────────┘
+   * ```
+   */
+  log(base?: number): Expr;
   /** Returns a unit Series with the lowest value possible for the dtype of this expression. */
   lowerBound(): Expr;
   peakMax(): Expr;
@@ -374,6 +701,42 @@ export interface Expr
   not(): Expr;
   /** Count unique values. */
   nUnique(): Expr;
+  /** Count null values.
+  @example
+  ```
+  >>> const df = pl.DataFrame({"a": [null, 1, null], "b": [1, 2, null], "c": [1, 2, 3]});
+  >>> df.select(pl.col("a").nullCount())
+  shape: (1, 1)
+  ┌─────┐
+  │ a   │
+  │ --- │
+  │ u32 │
+  ╞═════╡
+  │ 2   │
+  └─────┘
+  ```
+  */
+  nullCount(): Expr;
+  /**
+   * Method equivalent of bitwise "or" operator `expr | other | ...`.
+    This has the effect of combining logical boolean expressions, but operates bitwise on integers.
+    @param other One or more expressions to combine with a bitwise "or".
+    @example
+    ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, { schema: { a: pl.Int16, b: pl.Int16 } });
+    >>> df.select(pl.col("a").or(pl.col("b")).alias("a_or_b"));
+    shape: (3, 1)
+    ┌────────┐
+    │ a_or_b │
+    │ ---    │
+    │ i16    │
+    ╞════════╡
+    │ 5      │
+    │ 7      │
+    │ 7      │
+    └────────┘
+    ```
+   */
   or(other: any): Expr;
   /**
    * Apply window function over a subgroup.
@@ -470,11 +833,40 @@ export interface Expr
    * ```
    */
   prefix(prefix: string): Expr;
+  /**
+  Compute the product of an expression.
+
+  Notes
+  -----
+  If there are no non-null values, then the output is `1`.
+  If you would prefer empty products to return `None`, you can
+  use `pl.when(expr.count()>0).then(expr.product())` instead
+  of `expr.product()`.
+
+  @example
+  ```
+  >>> df = pl.DataFrame({"a": [1, 2, 3]});
+  >>> df.select(pl.col("a").product());
+  shape: (1, 1)
+  ┌─────┐
+  │ a   │
+  │ --- │
+  │ f64 │
+  ╞═════╡
+  │ 6.0 │
+  └─────┘
+  ```
+  */
+  product(): Expr;
   /** Get quantile value. */
   quantile(quantile: number | Expr): Expr;
-  /** Assign ranks to data, dealing with ties appropriately. */
-  rank(method?: RankMethod): Expr;
-  rank({ method }: { method: string }): Expr;
+  /**
+   * Assign ranks to data, dealing with ties appropriately.
+   * @param method : {'average', 'min', 'max', 'dense', 'ordinal', 'random'}
+   * @param descending - Rank in descending order.
+   * */
+  rank(method?: RankMethod, descending?: boolean): Expr;
+  rank({ method, descending }: { method: string; descending: boolean }): Expr;
   reinterpret(signed?: boolean): Expr;
   reinterpret({ signed }: { signed: boolean }): Expr;
   /**
@@ -485,6 +877,221 @@ export interface Expr
    * The column will be coerced to UInt32. Give this dtype to make the coercion a no-op.
    */
   repeatBy(by: Expr | string): Expr;
+  /**
+   * Replace values by different values.
+   * @param old - Value or sequence of values to replace.
+                  Accepts expression input. Sequences are parsed as Series, other non-expression inputs are parsed as literals.
+   * @param new_ - Value or sequence of values to replace by.
+                  Accepts expression input. Sequences are parsed as Series, other non-expression inputs are parsed as literals.
+                  Length must match the length of `old` or have length 1.
+   * @param default_ - Set values that were not replaced to this value. If no default is specified,
+                  (default), an error is raised if any values were not replaced.
+                  Accepts expression input. Non-expression inputs are parsed as literals.
+   * @param returnDtype - The data type of the resulting expression. If set to `None` (default), the data type is determined automatically based on the other inputs.
+     @returns InvalidOperationError - If any non-null values in the original column were not replaced, and no `default` was specified.
+   * @see {@link replace}
+   * @example
+   * Replace a single value by another value. Values that were not replaced remain unchanged.
+   * ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 2, 3]});
+    >>> df.withColumns(pl.col("a").replace(2, 100).alias("replaced"));
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ 1        │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 3        │
+    └─────┴──────────┘
+   * ```
+   * Replace multiple values by passing sequences to the `old` and `new_` parameters.
+   * ```
+    >>> df.withColumns(pl.col("a").replace([2, 3], [100, 200]).alias("replaced"));
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ 1        │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 200      │
+    └─────┴──────────┘
+  * ```
+  * Passing a mapping with replacements is also supported as syntactic sugar.
+    Specify a default to set all values that were not matched.
+  * ```
+    >>> const mapping = {2: 100, 3: 200};
+    >>> df.withColumns(pl.col("a").replaceStrict({ old: mapping, default_: -1, returnDtype: pl.Int64 }).alias("replaced");
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ -1       │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 200      │
+    └─────┴──────────┘
+  * ```
+    Replacing by values of a different data type sets the return type based on
+    a combination of the `new_` data type and either the original data type or the
+    default data type if it was set.
+  * ```
+    >>> const df = pl.DataFrame({"a": ["x", "y", "z"]});
+    >>> const mapping = {"x": 1, "y": 2, "z": 3};
+    >>> df.withColumns(pl.col("a").replaceStrict({ old: mapping }).alias("replaced"));
+    shape: (3, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ str ┆ str      │
+    ╞═════╪══════════╡
+    │ x   ┆ 1        │
+    │ y   ┆ 2        │
+    │ z   ┆ 3        │
+    └─────┴──────────┘
+    >>> df.withColumns(pl.col("a").replaceStrict({ old: mapping, default_: None }).alias("replaced"));
+    shape: (3, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ str ┆ i64      │
+    ╞═════╪══════════╡
+    │ x   ┆ 1        │
+    │ y   ┆ 2        │
+    │ z   ┆ 3        │
+    └─────┴──────────┘
+  * ```
+    Set the `returnDtype` parameter to control the resulting data type directly.
+  * ```
+    >>> df.withColumns(pl.col("a").replaceStrict({ old: mapping, returnDtype: pl.UInt8 }).alias("replaced"));
+    shape: (3, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ str ┆ u8       │
+    ╞═════╪══════════╡
+    │ x   ┆ 1        │
+    │ y   ┆ 2        │
+    │ z   ┆ 3        │
+    └─────┴──────────┘
+  * ```
+  * Expression input is supported for all parameters.
+  * ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 2, 3], "b": [1.5, 2.5, 5.0, 1.0]});
+    >>> df.withColumns(
+    ...         pl.col("a").replaceStrict({
+    ...         old: pl.col("a").max(),
+    ...         new_: pl.col("b").sum(),
+    ...         default_: pl.col("b"),
+    ...     }).alias("replaced")
+    ... );
+    shape: (4, 3)
+    ┌─────┬─────┬──────────┐
+    │ a   ┆ b   ┆ replaced │
+    │ --- ┆ --- ┆ ---      │
+    │ i64 ┆ f64 ┆ f64      │
+    ╞═════╪═════╪══════════╡
+    │ 1   ┆ 1.5 ┆ 1.5      │
+    │ 2   ┆ 2.5 ┆ 2.5      │
+    │ 2   ┆ 5.0 ┆ 5.0      │
+    │ 3   ┆ 1.0 ┆ 10.0     │
+    └─────┴─────┴──────────┘
+   * ``` 
+   */
+  replaceStrict(
+    old: Expr | string | number | (number | string)[],
+    new_: Expr | string | number | (number | string)[],
+    default_?: Expr | string | number | (number | string)[],
+    returnDtype?: DataType,
+  ): Expr;
+  replaceStrict({
+    old,
+    new_,
+    default_,
+    returnDtype,
+  }: {
+    old: unknown | Expr | string | number | (number | string)[];
+    new_?: Expr | string | number | (number | string)[];
+    default_?: Expr | string | number | (number | string)[];
+    returnDtype?: DataType;
+  }): Expr;
+  /**
+   * Replace the given values by different values of the same data type.
+   * @param old - Value or sequence of values to replace.
+                  Accepts expression input. Sequences are parsed as Series, other non-expression inputs are parsed as literals.
+   * @param new_ - Value or sequence of values to replace by.
+                  Accepts expression input. Sequences are parsed as Series, other non-expression inputs are parsed as literals.
+                  Length must match the length of `old` or have length 1.
+   * @see {@link replaceStrict}
+   * @see {@link replace}
+   * @example
+   * Replace a single value by another value. Values that were not replaced remain unchanged.
+   * ```
+    >>> const df = pl.DataFrame({"a": [1, 2, 2, 3]});
+    >>> df.withColumns(pl.col("a").replace(2, 100).alias("replaced"));
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ 1        │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 3        │
+    └─────┴──────────┘
+   * ```
+   * Replace multiple values by passing sequences to the `old` and `new_` parameters.
+   * ```
+    >>> df.withColumns(pl.col("a").replace([2, 3], [100, 200]).alias("replaced"));
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ 1        │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 200      │
+    └─────┴──────────┘
+  * ```
+  * Passing a mapping with replacements is also supported as syntactic sugar.
+    Specify a default to set all values that were not matched.
+  * ```
+    >>> const mapping = {2: 100, 3: 200};
+    >>> df.withColumns(pl.col("a").replace({ old: mapping }).alias("replaced");
+    shape: (4, 2)
+    ┌─────┬──────────┐
+    │ a   ┆ replaced │
+    │ --- ┆ ---      │
+    │ i64 ┆ i64      │
+    ╞═════╪══════════╡
+    │ 1   ┆ -1       │
+    │ 2   ┆ 100      │
+    │ 2   ┆ 100      │
+    │ 3   ┆ 200      │
+    └─────┴──────────┘
+  * ```
+  */
+  replace(
+    old: Expr | string | number | (number | string)[],
+    new_: Expr | string | number | (number | string)[],
+  ): Expr;
+  replace({
+    old,
+    new_,
+  }: {
+    old: unknown | Expr | string | number | (number | string)[];
+    new_?: Expr | string | number | (number | string)[];
+  }): Expr;
   /** Reverse the arrays in the list */
   reverse(): Expr;
   /**
@@ -502,7 +1109,46 @@ export interface Expr
   shiftAndFill({
     periods,
     fillValue,
-  }: { periods: number; fillValue: number }): Expr;
+  }: {
+    periods: number;
+    fillValue: number;
+  }): Expr;
+  /**
+   * Compute the element-wise value for the sine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [0.0]})
+    >>> df.select(pl.col("a").sin())
+    shape: (1, 1)
+    ┌─────┐
+    │ a   │
+    │ --- │
+    │ f64 │
+    ╞═════╡
+    │ 0.0 │
+    └─────┘
+   *```
+   */
+  sin(): Expr;
+  /**
+   * Compute the element-wise value for the hyperbolic sine.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   * ```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").sinh())
+    shape: (1, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 1.175201 │
+    └──────────┘
+   *```
+   */
+  sinh(): Expr;
   /**
    * Compute the sample skewness of a data set.
    * For normally distributed data, the skewness should be about zero. For
@@ -518,19 +1164,25 @@ export interface Expr
   slice({
     offset,
     length,
-  }: { offset: number | Expr; length: number | Expr }): Expr;
+  }: {
+    offset: number | Expr;
+    length: number | Expr;
+  }): Expr;
   /**
    * Sort this column. In projection/ selection context the whole column is sorted.
-   * @param reverse
+   * @param descending
    * * false -> order from small to large.
    * * true -> order from large to small.
    * @param nullsLast If true nulls are considered to be larger than any valid value
    */
-  sort(reverse?: boolean, nullsLast?: boolean): Expr;
+  sort(descending?: boolean, nullsLast?: boolean): Expr;
   sort({
-    reverse,
+    descending,
     nullsLast,
-  }: { reverse?: boolean; nullsLast?: boolean }): Expr;
+  }: {
+    descending?: boolean;
+    nullsLast?: boolean;
+  }): Expr;
   /**
    * Sort this column by the ordering of another column, or multiple other columns.
       In projection/ selection context the whole column is sorted.
@@ -539,17 +1191,17 @@ export interface Expr
       Parameters
       ----------
       @param by The column(s) used for sorting.
-      @param reverse
+      @param descending
           false -> order from small to large.
           true -> order from large to small.
    */
   sortBy(
     by: ExprOrString[] | ExprOrString,
-    reverse?: boolean | boolean[],
+    descending?: boolean | boolean[],
   ): Expr;
   sortBy(options: {
     by: ExprOrString[] | ExprOrString;
-    reverse?: boolean | boolean[];
+    descending?: boolean | boolean[];
   }): Expr;
   /** Get standard deviation. */
   std(): Expr;
@@ -557,7 +1209,6 @@ export interface Expr
   suffix(suffix: string): Expr;
   /**
    * Get sum value.
-   * @note
    * Dtypes in {Int8, UInt8, Int16, UInt16} are cast to Int64 before summing to prevent overflow issues.
    */
   sum(): Expr;
@@ -565,19 +1216,47 @@ export interface Expr
   tail(length?: number): Expr;
   tail({ length }: { length: number }): Expr;
   /**
-   * Take values by index.
-   * @param index An expression that leads to a UInt32 dtyped Series.
+   * Compute the element-wise value for the tangent.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   *```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").tan().round(2))
+    shape: (1, 1)
+    ┌──────┐
+    │ a    │
+    │ ---  │
+    │ f64  │
+    ╞══════╡
+    │ 1.56 │
+    └──────┘
+   *```
    */
-  gather(index: Expr | number[] | Series): Expr;
-  gather({ index }: { index: Expr | number[] | Series }): Expr;
-  /** Take every nth value in the Series and return as a new Series. */
-  gatherEvery(n: number, offset?: number): Expr;
+  tan(): Expr;
+  /**
+   * Compute the element-wise value for the hyperbolic tangent.
+   * @returns Expression of data type :class:`Float64`.
+   * @example
+   *```
+    >>> const df = pl.DataFrame({"a": [1.0]})
+    >>> df.select(pl.col("a").tanh())
+    shape: (1, 1)
+    ┌──────────┐
+    │ a        │
+    │ ---      │
+    │ f64      │
+    ╞══════════╡
+    │ 0.761594 │
+    └──────────┘
+   *```
+   */
+  tanh(): Expr;
   /**
    * Get the unique values of this expression;
    * @param maintainOrder Maintain order of data. This requires more work.
    */
-  unique(opt: { maintainOrder: boolean }): Expr;
   unique(maintainOrder?: boolean): Expr;
+  unique(opt: { maintainOrder: boolean }): Expr;
   /** Returns a unit Series with the highest value possible for the dtype of this expression. */
   upperBound(): Expr;
   /** Get variance. */
@@ -585,7 +1264,7 @@ export interface Expr
   /** Alias for filter: @see {@link filter} */
   where(predicate: Expr): Expr;
 }
-
+/** @ignore */
 export const _Expr = (_expr: any): Expr => {
   const unwrap = (method: string, ...args: any[]) => {
     return _expr[method as any](...args);
@@ -610,7 +1289,7 @@ export const _Expr = (_expr: any): Expr => {
         throw new Error("window size is required");
       }
       const callOpts = {
-        windowSize: `${windowSize}i`,
+        windowSize: windowSize,
         weights: opts?.["weights"] ?? weights,
         minPeriods: opts?.["minPeriods"] ?? minPeriods ?? windowSize,
         center: opts?.["center"] ?? center ?? false,
@@ -650,6 +1329,9 @@ export const _Expr = (_expr: any): Expr => {
     get date() {
       return dt.ExprDateTimeFunctions(_expr);
     },
+    get dt() {
+      return dt.ExprDateTimeFunctions(_expr);
+    },
     get struct() {
       return struct.ExprStructFunctions(_expr);
     },
@@ -667,8 +1349,25 @@ export const _Expr = (_expr: any): Expr => {
     },
     and(other) {
       const expr = (exprToLitOrExpr(other, false) as any).inner();
-
       return _Expr(_expr.and(expr));
+    },
+    arccos() {
+      return _Expr(_expr.arccos());
+    },
+    arccosh() {
+      return _Expr(_expr.arccosh());
+    },
+    arcsin() {
+      return _Expr(_expr.arcsin());
+    },
+    arcsinh() {
+      return _Expr(_expr.arcsinh());
+    },
+    arctan() {
+      return _Expr(_expr.arctan());
+    },
+    arctanh() {
+      return _Expr(_expr.arctanh());
     },
     argMax() {
       return _Expr(_expr.argMax());
@@ -676,10 +1375,10 @@ export const _Expr = (_expr: any): Expr => {
     argMin() {
       return _Expr(_expr.argMin());
     },
-    argSort(reverse: any = false, maintain_order?: boolean) {
-      reverse = reverse?.reverse ?? reverse;
-      maintain_order = reverse?.maintain_order ?? maintain_order;
-      return _Expr(_expr.argSort(reverse, false, false, maintain_order));
+    argSort(descending: any = false, nullsLast: boolean = false) {
+      descending = descending?.descending ?? descending;
+      nullsLast = descending?.nullsLast ?? nullsLast;
+      return _Expr(_expr.argSort(descending, nullsLast));
     },
     argUnique() {
       return _Expr(_expr.argUnique());
@@ -708,6 +1407,15 @@ export const _Expr = (_expr: any): Expr => {
           exprToLitOrExpr(arg.max)._expr,
         ),
       );
+    },
+    cos() {
+      return _Expr(_expr.cos());
+    },
+    cosh() {
+      return _Expr(_expr.cosh());
+    },
+    cot() {
+      return _Expr(_expr.cot());
     },
     count() {
       return _Expr(_expr.count());
@@ -739,9 +1447,9 @@ export const _Expr = (_expr: any): Expr => {
     },
     diff(n, nullBehavior = "ignore") {
       if (typeof n === "number") {
-        return _Expr(_expr.diff(n, nullBehavior));
+        return _Expr(_expr.diff(exprToLitOrExpr(n, false), nullBehavior));
       }
-      return _Expr(_expr.diff(n.n, n.nullBehavior));
+      return _Expr(_expr.diff(exprToLitOrExpr(n.n, false), n.nullBehavior));
     },
     dot(other) {
       const expr = (exprToLitOrExpr(other, false) as any).inner();
@@ -859,23 +1567,17 @@ export const _Expr = (_expr: any): Expr => {
     explode() {
       return _Expr(_expr.explode());
     },
-    extend(o, n?) {
-      if (n !== null && typeof n === "number") {
-        return _Expr(_expr.extendConstant(o, n));
-      }
-
-      return _Expr(_expr.extendConstant(o.value, o.n));
+    exp() {
+      return _Expr(_expr.exp());
     },
     extendConstant(o, n?) {
       if (n !== null && typeof n === "number") {
         return _Expr(_expr.extendConstant(o, n));
       }
-
       return _Expr(_expr.extendConstant(o.value, o.n));
     },
     fillNan(other) {
       const expr = (exprToLitOrExpr(other, true) as any).inner();
-
       return _Expr(_expr.fillNan(expr));
     },
     fillNull(fillValue) {
@@ -886,9 +1588,7 @@ export const _Expr = (_expr: any): Expr => {
       ) {
         return _Expr(_expr.fillNullWithStrategy(fillValue));
       }
-
       const expr = exprToLitOrExpr(fillValue).inner();
-
       return _Expr(_expr.fillNull(expr));
     },
     filter(predicate) {
@@ -907,6 +1607,17 @@ export const _Expr = (_expr: any): Expr => {
     },
     forwardFill() {
       return _Expr(_expr.forwardFill());
+    },
+    gather(indices) {
+      if (Array.isArray(indices)) {
+        indices = pli.litSeries(Series("", indices, pli.Int64).inner());
+      } else {
+        indices = indices.inner();
+      }
+      return wrap("gather", indices);
+    },
+    gatherEvery(n, offset = 0) {
+      return _Expr(_expr.gatherEvery(n, offset));
     },
     hash(obj: any = 0, k1 = 1, k2 = 2, k3 = 3) {
       if (typeof obj === "number" || typeof obj === "bigint") {
@@ -928,6 +1639,9 @@ export const _Expr = (_expr: any): Expr => {
       }
 
       return wrap("head", length.length);
+    },
+    implode() {
+      return _Expr(_expr.implode());
     },
     interpolate(method: InterpolationMethod = "linear") {
       return _Expr(_expr.interpolate(method));
@@ -959,14 +1673,13 @@ export const _Expr = (_expr: any): Expr => {
     isUnique() {
       return _Expr(_expr.isUnique());
     },
-    isIn(other) {
+    isIn(other, nullsEquals = false) {
       if (Array.isArray(other)) {
         other = pli.lit(Series(other).inner());
       } else {
         other = exprToLitOrExpr(other, false).inner();
       }
-
-      return wrap("isIn", other);
+      return wrap("isIn", other, nullsEquals);
     },
     keepName() {
       return _Expr(_expr.keepName());
@@ -974,7 +1687,6 @@ export const _Expr = (_expr: any): Expr => {
     kurtosis(obj?, bias = true) {
       const fisher = obj?.["fisher"] ?? (typeof obj === "boolean" ? obj : true);
       bias = obj?.["bias"] ?? bias;
-
       return _Expr(_expr.kurtosis(fisher, bias));
     },
     last() {
@@ -982,6 +1694,12 @@ export const _Expr = (_expr: any): Expr => {
     },
     list() {
       return _Expr(_expr.list());
+    },
+    log1p() {
+      return _Expr(_expr.log1p());
+    },
+    log(base?: number) {
+      return _Expr(_expr.log(base ?? Math.E));
     },
     lowerBound() {
       return _Expr(_expr.lowerBound());
@@ -1013,6 +1731,9 @@ export const _Expr = (_expr: any): Expr => {
     nUnique() {
       return _Expr(_expr.nUnique());
     },
+    nullCount() {
+      return _Expr(_expr.nullCount());
+    },
     or(other) {
       const expr = exprToLitOrExpr(other).inner();
 
@@ -1029,6 +1750,9 @@ export const _Expr = (_expr: any): Expr => {
     prefix(prefix) {
       return _Expr(_expr.prefix(prefix));
     },
+    product() {
+      return _Expr(_expr.product());
+    },
     quantile(quantile, interpolation: InterpolationMethod = "nearest") {
       if (Expr.isExpr(quantile)) {
         quantile = quantile._expr;
@@ -1038,9 +1762,9 @@ export const _Expr = (_expr: any): Expr => {
 
       return _Expr(_expr.quantile(quantile, interpolation));
     },
-    rank(method: any = "average", reverse = false) {
+    rank(method: any = "average", descending = false) {
       return _Expr(
-        _expr.rank(method?.method ?? method, method?.reverse ?? reverse),
+        _expr.rank(method?.method ?? method, method?.descending ?? descending),
       );
     },
     reinterpret(signed: any = true) {
@@ -1052,6 +1776,38 @@ export const _Expr = (_expr: any): Expr => {
       const e = exprToLitOrExpr(expr, false)._expr;
 
       return _Expr(_expr.repeatBy(e));
+    },
+    replace(old, newValue) {
+      let oldIn: any = old;
+      let newIn = newValue;
+      if (old && typeof old === "object" && !Array.isArray(old)) {
+        oldIn = Object.keys(old["old"]);
+        newIn = Object.values(old["old"]);
+      }
+      return _Expr(
+        _expr.replace(
+          exprToLitOrExpr(oldIn)._expr,
+          exprToLitOrExpr(newIn)._expr,
+        ),
+      );
+    },
+    replaceStrict(old, newValue, defaultValue, returnDtype) {
+      let oldIn: any = old;
+      let newIn = newValue;
+      let defIn = defaultValue;
+      if (old && typeof old === "object" && !Array.isArray(old)) {
+        oldIn = Object.keys(old["old"]);
+        newIn = Object.values(old["old"]);
+        defIn = old["default_"];
+      }
+      return _Expr(
+        _expr.replaceStrict(
+          exprToLitOrExpr(oldIn)._expr,
+          exprToLitOrExpr(newIn)._expr,
+          defIn ? exprToLitOrExpr(defIn)._expr : undefined,
+          returnDtype,
+        ),
+      );
     },
     reverse() {
       return _Expr(_expr.reverse());
@@ -1065,7 +1821,7 @@ export const _Expr = (_expr: any): Expr => {
     rollingMedian: rolling("rollingMedian"),
     rollingQuantile(
       val,
-      interpolation?,
+      _interpolation?,
       windowSize?,
       weights?,
       minPeriods?,
@@ -1091,12 +1847,12 @@ export const _Expr = (_expr: any): Expr => {
         "rollingQuantile",
         val.quantile,
         val.interpolation ?? "nearest",
-        `${windowSize}i`,
+        windowSize,
         val?.["weights"] ?? weights ?? null,
         val?.["minPeriods"] ?? minPeriods ?? windowSize,
         val?.["center"] ?? center ?? false,
         val?.["by"] ?? by,
-        val?.["closedWindow"] ?? closedWindow ?? "left",
+        closedWindow,
         val?.["warnIfUnsorted"] ?? warnIfUnsorted ?? true,
       );
     },
@@ -1107,8 +1863,13 @@ export const _Expr = (_expr: any): Expr => {
 
       return wrap("rollingSkew", val.windowSize, val.bias ?? bias);
     },
-    round(decimals) {
-      return _Expr(_expr.round(decimals?.decimals ?? decimals));
+    round(decimals, mode?: RoundMode) {
+      return _Expr(
+        _expr.round(
+          decimals?.decimals ?? decimals,
+          decimals?.mode ?? mode ?? "halftoeven",
+        ),
+      );
     },
     sample(opts?, frac?, withReplacement = false, seed?) {
       if (opts?.n !== undefined || opts?.frac !== undefined) {
@@ -1116,14 +1877,26 @@ export const _Expr = (_expr: any): Expr => {
           opts.n,
           opts.frac,
           opts.withReplacement,
-          seed,
+          opts.seed,
         );
       }
       if (typeof opts === "number") {
-        throw new Error("sample_n is not yet supported for expr");
+        return wrap(
+          "sampleN",
+          exprToLitOrExpr(opts),
+          withReplacement,
+          false,
+          seed,
+        );
       }
       if (typeof frac === "number") {
-        return wrap("sampleFrac", frac, withReplacement, false, seed);
+        return wrap(
+          "sampleFrac",
+          exprToLitOrExpr(frac),
+          withReplacement,
+          false,
+          seed,
+        );
       }
       throw new TypeError("must specify either 'frac' or 'n'");
     },
@@ -1139,6 +1912,12 @@ export const _Expr = (_expr: any): Expr => {
     skew(bias) {
       return wrap("skew", bias?.bias ?? bias ?? true);
     },
+    sin() {
+      return _Expr(_expr.sin());
+    },
+    sinh() {
+      return _Expr(_expr.sinh());
+    },
     slice(arg, len?) {
       if (typeof arg === "number") {
         return wrap("slice", pli.lit(arg), pli.lit(len));
@@ -1146,28 +1925,30 @@ export const _Expr = (_expr: any): Expr => {
 
       return wrap("slice", pli.lit(arg.offset), pli.lit(arg.length));
     },
-    sort(reverse: any = false, nullsLast = false, maintain_order = false) {
-      if (typeof reverse === "boolean") {
-        return wrap("sortWith", reverse, nullsLast, false, maintain_order);
+    sort(descending: any = false, nullsLast = false, maintainOrder = false) {
+      if (typeof descending === "boolean") {
+        return wrap("sortWith", descending, nullsLast, false, maintainOrder);
       }
 
       return wrap(
         "sortWith",
-        reverse?.reverse ?? false,
-        reverse?.nullsLast ?? nullsLast,
+        descending?.descending ?? false,
+        descending?.nullsLast ?? nullsLast,
         false,
-        reverse?.maintain_order ?? maintain_order,
+        descending?.maintainOrder ?? maintainOrder,
       );
     },
-    sortBy(arg, reverse = false) {
+    sortBy(arg, descending = false) {
       if (arg?.by !== undefined) {
-        return this.sortBy(arg.by, arg.reverse);
+        return this.sortBy(arg.by, arg.descending ?? false);
       }
 
-      reverse = Array.isArray(reverse) ? reverse.flat() : ([reverse] as any);
+      descending = Array.isArray(descending)
+        ? descending.flat()
+        : ([descending] as any);
       const by = selectionToExprList(arg, false);
 
-      return wrap("sortBy", by, reverse);
+      return wrap("sortBy", by, descending);
     },
     std() {
       return _Expr(_expr.std());
@@ -1181,16 +1962,11 @@ export const _Expr = (_expr: any): Expr => {
     tail(length) {
       return _Expr(_expr.tail(length));
     },
-    gather(indices) {
-      if (Array.isArray(indices)) {
-        indices = pli.lit(Series(indices).inner());
-      } else {
-        indices = indices.inner();
-      }
-      return wrap("gather", indices);
+    tan() {
+      return _Expr(_expr.tan());
     },
-    gatherEvery(n, offset = 0) {
-      return _Expr(_expr.gatherEvery(n, offset));
+    tanh() {
+      return _Expr(_expr.tanh());
     },
     unique(opt?) {
       if (opt || opt?.maintainOrder) {
@@ -1241,7 +2017,7 @@ export interface ExprConstructor extends Deserialize<Expr> {
 const isExpr = (anyVal: any): anyVal is Expr => {
   try {
     return anyVal?.[Symbol.toStringTag]?.() === "Expr";
-  } catch (err) {
+  } catch (_err) {
     return false;
   }
 };
@@ -1266,7 +2042,7 @@ export const exprToLitOrExpr = (expr: any, stringToLit = true): Expr => {
     return expr;
   }
   if (Series.isSeries(expr)) {
-    return _Expr(pli.lit((expr as any)._s));
+    return _Expr(pli.litSeries((expr as any)._s));
   }
   return _Expr(pli.lit(expr));
 };

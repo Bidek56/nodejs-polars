@@ -1,59 +1,87 @@
-import { type DataFrame, _DataFrame } from "../dataframe";
-import { Expr, exprToLitOrExpr } from "./expr";
-import pli from "../internals/polars_internal";
 import {
-  columnOrColumnsStrict,
+  _DataFrame,
+  type DataFrame,
+  type JoinSchemas,
+  type Schema,
+  writeCsvDefaultOptions,
+} from "../dataframe";
+import pli from "../internals/polars_internal";
+import type { Series } from "../series";
+import type { Deserialize, GroupByOps, Serialize } from "../shared_traits";
+import type {
+  CollectSyncOptions,
+  CsvWriterOptions,
+  LazyCrossJoinOptions,
+  LazyDifferentNameColumnJoinOptions,
+  LazyJoinOptions,
+  LazyOptions,
+  LazySameNameColumnJoinOptions,
+  SinkIpcOptions,
+  SinkJsonOptions,
+  SinkParquetOptions,
+} from "../types";
+import {
   type ColumnSelection,
   type ColumnsOrExpr,
+  columnOrColumnsStrict,
   type ExprOrString,
+  type Simplify,
   selectionToExprList,
   type ValueOrArray,
 } from "../utils";
+import { Expr, exprToLitOrExpr } from "./expr";
 import { _LazyGroupBy, type LazyGroupBy } from "./groupby";
-import type { Deserialize, GroupByOps, Serialize } from "../shared_traits";
-import type {
-  LazyOptions,
-  LazyJoinOptions,
-  SinkCsvOptions,
-  SinkParquetOptions,
-} from "../types";
-import type { Series } from "../series";
 
 const inspect = Symbol.for("nodejs.util.inspect.custom");
 
 /**
  * Representation of a Lazy computation graph / query.
  */
-export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
+export interface LazyDataFrame<S extends Schema = any>
+  extends Serialize,
+    GroupByOps<LazyGroupBy> {
   /** @ignore */
   _ldf: any;
   [inspect](): string;
+  [Symbol.toStringTag]: string;
   get columns(): string[];
   /**
    * Cache the result once the execution of the physical plan hits this node.
    */
-  cache(): LazyDataFrame;
-  clone(): LazyDataFrame;
+  cache(): LazyDataFrame<S>;
+  clone(): LazyDataFrame<S>;
   /**
    *
    * Collect into a DataFrame.
    * Note: use `fetch` if you want to run this query on the first `n` rows only.
    * This can be a huge time saver in debugging queries.
-   * @param typeCoercion -Do type coercion optimization.
-   * @param predicatePushdown - Do predicate pushdown optimization.
-   * @param projectionPushdown - Do projection pushdown optimization.
-   * @param simplifyExpression - Run simplify expressions optimization.
-   * @param stringCache - Use a global string cache in this query.
-   *     This is needed if you want to join on categorical columns.
-   *     Caution!
-   * *  If you already have set a global string cache, set this to `false` as this will reset the
-   * *  global cache when the query is finished.
-   * @param noOptimization - Turn off optimizations.
+   * @param opts.typeCoercion -Do type coercion optimization.
+   * @param opts.predicatePushdown - Do predicate pushdown optimization.
+   * @param opts.projectionPushdown - Do projection pushdown optimization.
+   * @param opts.simplifyExpression - Run simplify expressions optimization.
+   * @param opts.noOptimization - Turn off optimizations.
+   * @param opts.commSubplanElim - Will try to cache branching subplans that occur on self-joins or unions.
+   * @param opts.commSubexprElim - Common subexpressions will be cached and reused.
+   * @param opts.streaming - Process the query in batches to handle larger-than-memory data.
+            If set to `False` (default), the entire query is processed in a single
+            batch.
+
+            .. warning::
+                Streaming mode is considered **unstable**. It may be changed
+                at any point without it being considered a breaking change.
    * @return DataFrame
    *
    */
-  collect(opts?: LazyOptions): Promise<DataFrame>;
-  collectSync(opts?: LazyOptions): DataFrame;
+  collect(opts?: LazyOptions): Promise<DataFrame<S>>;
+  /**
+   * Materialize this LazyFrame into a DataFrame. By default, all query optimizations are enabled.
+   * @param opts.engine - Engine to use for execution
+   *        Select the engine used to process the query, optional.
+            At the moment, if set to `"auto"` (default), the query is run using the polars in-memory engine. 
+            Polars will also attempt to use the engine set by the `POLARS_ENGINE_AFFINITY` environment variable. 
+            If it cannot run the query using the selected engine, the query is run using the polars in-memory engine. 
+   */
+  collectSync(opts?: CollectSyncOptions): DataFrame<S>;
   /**
    * A string representation of the optimized query plan.
    */
@@ -64,36 +92,23 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
   describePlan(): string;
   /**
    * Remove one or multiple columns from a DataFrame.
-   * @param columns - column or list of columns to be removed
+   * @param name - column or list of columns to be removed
    */
-  drop(name: string): LazyDataFrame;
-  drop(names: string[]): LazyDataFrame;
-  drop(name: string, ...names: string[]): LazyDataFrame;
-  /**
-   * Drop duplicate rows from this DataFrame.
-   * Note that this fails if there is a column of type `List` in the DataFrame.
-   * @param maintainOrder
-   * @param subset - subset to drop duplicates for
-   * @param keep "first" | "last"
-   * @deprecated @since 0.4.0 @use {@link unique}
-   */
-  distinct(
-    maintainOrder?: boolean,
-    subset?: ColumnSelection,
-    keep?: "first" | "last",
-  ): LazyDataFrame;
-  distinct(opts: {
-    maintainOrder?: boolean;
-    subset?: ColumnSelection;
-    keep?: "first" | "last";
-  }): LazyDataFrame;
+  drop<U extends string>(name: U): LazyDataFrame<Simplify<Omit<S, U>>>;
+  drop<const U extends string[]>(
+    names: U,
+  ): LazyDataFrame<Simplify<Omit<S, U[number]>>>;
+  drop<U extends string, const V extends string[]>(
+    name: U,
+    ...names: V
+  ): LazyDataFrame<Simplify<Omit<S, U | V[number]>>>;
   /**
    * Drop rows with null values from this DataFrame.
    * This method only drops nulls row-wise if any single value of the row is null.
    */
-  dropNulls(column: string): LazyDataFrame;
-  dropNulls(columns: string[]): LazyDataFrame;
-  dropNulls(...columns: string[]): LazyDataFrame;
+  dropNulls(column: string): LazyDataFrame<S>;
+  dropNulls(columns: string[]): LazyDataFrame<S>;
+  dropNulls(...columns: string[]): LazyDataFrame<S>;
   /**
    * Explode lists to long format.
    */
@@ -102,28 +117,35 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
   explode(column: ExprOrString, ...columns: ExprOrString[]): LazyDataFrame;
   /**
    * Fetch is like a collect operation, but it overwrites the number of rows read by every scan
-   *
    * Note that the fetch does not guarantee the final number of rows in the DataFrame.
-   * Filter, join operations and a lower number of rows available in the scanned file influence
-   * the final number of rows.
+   * Filter, join operations and a lower number of rows available in the scanned file influence the final number of rows.
+   * @deprecated *since 0.23.0* use `LazyFrame.collect` instead, in conjunction with a call to `head`
    * @param numRows - collect 'n' number of rows from data source
-   * @param opts
    * @param opts.typeCoercion -Do type coercion optimization.
    * @param opts.predicatePushdown - Do predicate pushdown optimization.
    * @param opts.projectionPushdown - Do projection pushdown optimization.
    * @param opts.simplifyExpression - Run simplify expressions optimization.
-   * @param opts.stringCache - Use a global string cache in this query.
+   * @param opts.commSubplanElim - Will try to cache branching subplans that occur on self-joins or unions.
+   * @param opts.commSubexprElim - Common subexpressions will be cached and reused.
+   * @param opts.streaming - Process the query in batches to handle larger-than-memory data.
+            If set to `False` (default), the entire query is processed in a single
+            batch.
+
+            .. warning::
+                Streaming mode is considered **unstable**. It may be changed
+                at any point without it being considered a breaking change.
+   *
    */
-  fetch(numRows?: number): Promise<DataFrame>;
-  fetch(numRows: number, opts: LazyOptions): Promise<DataFrame>;
+  fetch(numRows: number, opts: LazyOptions): Promise<DataFrame<S>>;
+  fetch(numRows?: number): Promise<DataFrame<S>>;
   /** Behaves the same as fetch, but will perform the actions synchronously */
-  fetchSync(numRows?: number): DataFrame;
-  fetchSync(numRows: number, opts: LazyOptions): DataFrame;
+  fetchSync(numRows?: number): DataFrame<S>;
+  fetchSync(numRows: number, opts: LazyOptions): DataFrame<S>;
   /**
    * Fill missing values
    * @param fillValue value to fill the missing values with
    */
-  fillNull(fillValue: string | number | Expr): LazyDataFrame;
+  fillNull(fillValue: string | number | Expr): LazyDataFrame<S>;
   /**
    * Filter the rows in the DataFrame based on a predicate expression.
    * @param predicate - Expression that evaluates to a boolean Series.
@@ -148,11 +170,11 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
    * └─────┴─────┴─────┘
    * ```
    */
-  filter(predicate: Expr | string): LazyDataFrame;
+  filter(predicate: Expr | string): LazyDataFrame<S>;
   /**
    * Get the first row of the DataFrame.
    */
-  first(): DataFrame;
+  first(): DataFrame<S>;
   /**
    * Start a groupby operation.
    */
@@ -165,18 +187,17 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
    * Consider using the `fetch` operation.
    * The `fetch` operation will truly load the first `n`rows lazily.
    */
-  head(length?: number): LazyDataFrame;
+  head(length?: number): LazyDataFrame<S>;
+  inner(): any;
   /**
    *  __SQL like joins.__
-   * @param df - DataFrame to join with.
-   * @param options
-   * @param options.leftOn - Name(s) of the left join column(s).
-   * @param options.rightOn - Name(s) of the right join column(s).
-   * @param options.on - Name(s) of the join columns in both DataFrames.
-   * @param options.how - Join strategy
-   * @param options.suffix - Suffix to append to columns with a duplicate name.
-   * @param options.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
-   * @param options.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
+   * @param other - DataFrame to join with.
+   * @param joinOptions.on - Name(s) of the join columns in both DataFrames.
+   * @param joinOptions.how - Join strategy
+   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
+   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns).
+   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
+   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
    * @see {@link LazyJoinOptions}
    * @example
    * ```
@@ -203,26 +224,113 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
    * ╰─────┴─────┴─────┴───────╯
    * ```
    */
-  join(
-    other: LazyDataFrame,
-    joinOptions: { on: ValueOrArray<string | Expr> } & LazyJoinOptions,
-  ): LazyDataFrame;
-  join(
-    other: LazyDataFrame,
-    joinOptions: {
-      leftOn: ValueOrArray<string | Expr>;
-      rightOn: ValueOrArray<string | Expr>;
-    } & LazyJoinOptions,
-  ): LazyDataFrame;
-  join(
-    other: LazyDataFrame,
-    options: {
-      how: "cross";
-      suffix?: string;
-      allowParallel?: boolean;
-      forceParallel?: boolean;
-    },
-  ): LazyDataFrame;
+  join<
+    S2 extends Schema,
+    const Opts extends LazySameNameColumnJoinOptions<
+      Extract<keyof S, string>,
+      Extract<keyof S2, string>
+    >,
+  >(
+    other: LazyDataFrame<S2>,
+    // the right & part is only used for typedoc to understend which fields are used
+    joinOptions: Opts & LazySameNameColumnJoinOptions,
+  ): LazyDataFrame<JoinSchemas<S, S2, Opts>>;
+  /**
+   *  __SQL like joins with different names for left and right dataframes.__
+   * @param other - DataFrame to join with.
+   * @param joinOptions.leftOn - Name(s) of the left join column(s).
+   * @param joinOptions.rightOn - Name(s) of the right join column(s).
+   * @param joinOptions.how - Join strategy
+   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
+   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns).
+   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
+   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
+   * @see {@link LazyJoinOptions}
+   * @example
+   * ```
+   * >>> const df = pl.DataFrame({
+   * >>>     foo: [1, 2, 3],
+   * >>>     bar: [6.0, 7.0, 8.0],
+   * >>>     ham: ['a', 'b', 'c'],
+   * >>>   }).lazy()
+   * >>>
+   * >>> const otherDF = pl.DataFrame({
+   * >>>     apple: ['x', 'y', 'z'],
+   * >>>     ham: ['a', 'b', 'd'],
+   * >>>   }).lazy();
+   * >>> const result = await df.join(otherDF, { leftOn: 'ham', rightOn: 'ham', how: 'inner' }).collect();
+   * shape: (2, 4)
+   * ╭─────┬─────┬─────┬───────╮
+   * │ foo ┆ bar ┆ ham ┆ apple │
+   * │ --- ┆ --- ┆ --- ┆ ---   │
+   * │ i64 ┆ f64 ┆ str ┆ str   │
+   * ╞═════╪═════╪═════╪═══════╡
+   * │ 1   ┆ 6   ┆ "a" ┆ "x"   │
+   * ├╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌┼╌╌╌╌╌╌╌┤
+   * │ 2   ┆ 7   ┆ "b" ┆ "y"   │
+   * ╰─────┴─────┴─────┴───────╯
+   * ```
+   */
+  join<
+    S2 extends Schema,
+    const Opts extends LazyDifferentNameColumnJoinOptions<
+      Extract<keyof S, string>,
+      Extract<keyof S2, string>
+    >,
+  >(
+    other: LazyDataFrame<S2>,
+    // the right & part is only used for typedoc to understend which fields are used
+    joinOptions: Opts & LazyDifferentNameColumnJoinOptions,
+  ): LazyDataFrame<JoinSchemas<S, S2, Opts>>;
+  /**
+   *  __SQL like cross joins.__
+   * @param other - DataFrame to join with.
+   * @param joinOptions.how - Join strategy {'inner', 'left', 'right', 'full', 'semi', 'anti', 'cross'}
+   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
+   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns). default: undefined
+   *         - **undefined** - *(Default)* Coalesce unless `how='full'` is specified.
+   *         - **true**      - Always coalesce join columns.
+   *         - **false**     - Never coalesce join columns.
+   * @param joinOptions.validate - Checks if join is of specified type. default: m:m
+   *        valid options: {'m:m', 'm:1', '1:m', '1:1'}
+   *           - **m:m** - *(Default)* Many-to-many (default). Does not result in checks.
+   *           - **1:1** - One-to-one. Checks if join keys are unique in both left and right datasets.
+   *           - **1:m** - One-to-many. Checks if join keys are unique in left dataset.
+   *           - **m:1** - Many-to-one. Check if join keys are unique in right dataset.
+   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
+   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
+   * @see {@link LazyJoinOptions}
+   * @example
+   * ```
+   * >>> const df = pl.DataFrame({
+   * >>>     foo: [1, 2],
+   * >>>     bar: [6.0, 7.0],
+   * >>>     ham: ['a', 'b'],
+   * >>>   }).lazy()
+   * >>>
+   * >>> const otherDF = pl.DataFrame({
+   * >>>     apple: ['x', 'y'],
+   * >>>     ham: ['a', 'b'],
+   * >>>   }).lazy();
+   * >>> const result = await df.join(otherDF, { how: 'cross' }).collect();
+   * shape: (4, 5)
+   * ╭─────┬─────┬─────┬───────┬───────────╮
+   * │ foo ┆ bar ┆ ham ┆ apple ┆ ham_right │
+   * │ --- ┆ --- ┆ --- ┆ ---   ┆ ---       │
+   * │ f64 ┆ f64 ┆ str ┆ str   ┆ str       │
+   * ╞═════╪═════╪═════╪═══════╪═══════════╡
+   * │ 1.0 ┆ 6.0 ┆ a   ┆ x     ┆ a         │
+   * │ 1.0 ┆ 6.0 ┆ a   ┆ y     ┆ b         │
+   * │ 2.0 ┆ 7.0 ┆ b   ┆ x     ┆ a         │
+   * │ 2.0 ┆ 7.0 ┆ b   ┆ y     ┆ b         │
+   * ╰─────┴─────┴─────┴───────┴───────────╯
+   * ```
+   */
+  join<S2 extends Schema, const Opts extends LazyCrossJoinOptions>(
+    other: LazyDataFrame<S2>,
+    // the right & part is only used for typedoc to understend which fields are used
+    joinOptions: Opts & LazyCrossJoinOptions,
+  ): LazyDataFrame<JoinSchemas<S, S2, Opts>>;
 
   /**
      * Perform an asof join. This is similar to a left-join except that we
@@ -238,6 +346,10 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
         - A "forward" search selects the first row in the right DataFrame whose
           'on' key is greater than or equal to the left's key.
 
+        - A "nearest" search selects the last row in the right DataFrame whose value
+          is nearest to the left's key. String keys are not currently supported for a
+          nearest search.
+
       The default is "backward".
 
       Parameters
@@ -248,7 +360,7 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
       @param options.on Join column of both DataFrames. If set, `leftOn` and `rightOn` should be undefined.
       @param options.byLeft join on these columns before doing asof join
       @param options.byRight join on these columns before doing asof join
-      @param options.strategy One of {'forward', 'backward'}
+      @param options.strategy One of {'forward', 'backward', 'nearest'}
       @param options.suffix Suffix to append to columns with a duplicate name.
       @param options.tolerance
         Numeric tolerance. By setting this the join will only be done if the near keys are within this distance.
@@ -271,6 +383,10 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
         - "3d12h4m25s" # 3 days, 12 hours, 4 minutes, and 25 seconds
       @param options.allowParallel Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
       @param options.forceParallel Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
+      @param options.checkSortedness 
+        Check the sortedness of the asof keys. If the keys are not sorted Polars
+        will error, or in case of 'by' argument raise a warning. This might become
+        a hard error in the future.
 
 
       @example
@@ -322,103 +438,114 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
       byLeft?: string | string[];
       byRight?: string | string[];
       by?: string | string[];
-      strategy?: "backward" | "forward";
+      strategy?: "backward" | "forward" | "nearest";
       suffix?: string;
       tolerance?: number | string;
       allowParallel?: boolean;
       forceParallel?: boolean;
+      checkSortedness?: boolean;
     },
   ): LazyDataFrame;
   /**
    * Get the last row of the DataFrame.
    */
-  last(): LazyDataFrame;
+  last(): LazyDataFrame<S>;
   /**
    * @see {@link head}
    */
-  limit(n?: number): LazyDataFrame;
+  limit(n?: number): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.max}
    */
-  max(): LazyDataFrame;
+  max(): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.mean}
    */
-  mean(): LazyDataFrame;
+  mean(): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.median}
    */
-  median(): LazyDataFrame;
+  median(): LazyDataFrame<S>;
   /**
-   * @see {@link DataFrame.melt}
+   * @see {@link DataFrame.unpivot}
    */
-  melt(idVars: ColumnSelection, valueVars: ColumnSelection): LazyDataFrame;
+  unpivot(
+    idVars: ColumnSelection,
+    valueVars: ColumnSelection,
+    options?: {
+      variableName?: string | null;
+      valueName?: string | null;
+    },
+  ): LazyDataFrame;
   /**
    * @see {@link DataFrame.min}
    */
-  min(): LazyDataFrame;
+  min(): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.quantile}
    */
-  quantile(quantile: number): LazyDataFrame;
+  quantile(quantile: number): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.rename}
    */
-  rename(mapping: Record<string, string>);
+  rename<const U extends Partial<Record<keyof S, string>>>(
+    mapping: U,
+  ): LazyDataFrame<{ [K in keyof S as U[K] extends string ? U[K] : K]: S[K] }>;
+  rename(mapping: Record<string, string>): LazyDataFrame;
   /**
    * Reverse the DataFrame.
    */
-  reverse();
+  reverse(): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.select}
    */
-  select(column: ExprOrString): LazyDataFrame;
-  select(columns: ExprOrString[]): LazyDataFrame;
-  select(...columns: ExprOrString[]): LazyDataFrame;
+  select<U extends keyof S>(...columns: U[]): LazyDataFrame<{ [P in U]: S[P] }>;
+  select(column: ExprOrString | Series): LazyDataFrame;
+  select(columns: (ExprOrString | Series)[]): LazyDataFrame;
+  select(...columns: (ExprOrString | Series)[]): LazyDataFrame;
   /**
    * @see {@link DataFrame.shift}
    */
-  shift(periods: number): LazyDataFrame;
-  shift(opts: { periods: number }): LazyDataFrame;
+  shift(periods: number): LazyDataFrame<S>;
+  shift(opts: { periods: number }): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.shiftAndFill}
    */
-  shiftAndFill(n: number, fillValue: number): LazyDataFrame;
-  shiftAndFill(opts: {
-    n: number;
-    fillValue: number;
-  }): LazyDataFrame;
+  shiftAndFill(n: number, fillValue: number): LazyDataFrame<S>;
+  shiftAndFill(opts: { n: number; fillValue: number }): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.slice}
    */
-  slice(offset: number, length: number): LazyDataFrame;
-  slice(opts: { offset: number; length: number }): LazyDataFrame;
+  slice(offset: number, length: number): LazyDataFrame<S>;
+  slice(opts: { offset: number; length: number }): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.sort}
    */
   sort(
     by: ColumnsOrExpr,
     descending?: ValueOrArray<boolean>,
-    maintain_order?: boolean,
-  ): LazyDataFrame;
+    nullsLast?: boolean,
+    maintainOrder?: boolean,
+  ): LazyDataFrame<S>;
   sort(opts: {
     by: ColumnsOrExpr;
     descending?: ValueOrArray<boolean>;
-    maintain_order?: boolean;
-  }): LazyDataFrame;
+    nullsLast?: boolean;
+    maintainOrder?: boolean;
+  }): LazyDataFrame<S>;
   /**
    * @see {@link DataFrame.std}
    */
-  std(): LazyDataFrame;
+  std(): LazyDataFrame<S>;
   /**
    * Aggregate the columns in the DataFrame to their sum value.
    */
-  sum(): LazyDataFrame;
+  sum(): LazyDataFrame<S>;
   /**
    * Get the last `n` rows of the DataFrame.
    * @see {@link DataFrame.tail}
    */
-  tail(length?: number): LazyDataFrame;
+  tail(length?: number): LazyDataFrame<S>;
   /**
    * compatibility with `JSON.stringify`
    */
@@ -426,42 +553,129 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
   /**
    * Drop duplicate rows from this DataFrame.
    * Note that this fails if there is a column of type `List` in the DataFrame.
-   * @param maintainOrder
-   * @param subset - subset to drop duplicates for
-   * @param keep "first" | "last"
-   */
+   * @param subset Column name(s), selector(s) to consider when identifying duplicate rows. If set to `None` (default), all columns are considered.
+   * @param keep : 'first', 'last', 'any', 'none' 
+   *        Which of the duplicate rows to keep. 
+            * 'any': Defaut, does not give any guarantee of which row is kept. This allows more optimizations.
+            * 'none': Don't keep duplicate rows.
+            * 'first': Keep the first unique row.
+            * 'last': Keep the last unique row.
+   * @param maintainOrder Keep the same order as the original DataFrame. This is more expensive to compute. Default: false
+   * @returns LazyDataFrame with unique rows.
+   * @example
+   * const ldf = pl.DataFrame({
+           foo: [1, 2, 2, 3],
+           bar: [1, 2, 2, 4],
+           ham: ["a", "d", "d", "c"],
+         }).lazy();
+    > ldf.unique().collectSync();
+    By default, all columns are considered when determining which rows are unique:
+    shape: (3, 3)
+    ┌─────┬─────┬─────┐
+    │ foo ┆ bar ┆ ham │
+    │ --- ┆ --- ┆ --- │
+    │ f64 ┆ f64 ┆ str │
+    ╞═════╪═════╪═════╡
+    │ 3.0 ┆ 4.0 ┆ c   │
+    │ 1.0 ┆ 1.0 ┆ a   │
+    │ 2.0 ┆ 2.0 ┆ d   │
+    └─────┴─────┴─────┘
+    > ldf.unique("foo").collectSync();
+    shape: (3, 3)
+    ┌─────┬─────┬─────┐
+    │ foo ┆ bar ┆ ham │
+    │ --- ┆ --- ┆ --- │
+    │ f64 ┆ f64 ┆ str │
+    ╞═════╪═════╪═════╡
+    │ 3.0 ┆ 4.0 ┆ c   │
+    │ 1.0 ┆ 1.0 ┆ a   │
+    │ 2.0 ┆ 2.0 ┆ d   │
+    └─────┴─────┴─────┘
+    > ldf.unique(["foo", "ham"], "first", true).collectSync(); or df.unique({ subset: ["foo", "ham"], keep: "first", maintainOrder: true }).collectSync();
+    shape: (3, 3)
+    ┌─────┬─────┬─────┐
+    │ foo ┆ bar ┆ ham │
+    │ --- ┆ --- ┆ --- │
+    │ f64 ┆ f64 ┆ str │
+    ╞═════╪═════╪═════╡
+    │ 1.0 ┆ 1.0 ┆ a   │
+    │ 2.0 ┆ 2.0 ┆ d   │
+    │ 3.0 ┆ 4.0 ┆ c   │
+    └─────┴─────┴─────┘
+  */
   unique(
-    maintainOrder?: boolean,
     subset?: ColumnSelection,
-    keep?: "first" | "last",
-  ): LazyDataFrame;
+    keep?: "first" | "last" | "any" | "none",
+    maintainOrder?: boolean,
+  ): LazyDataFrame<S>;
   unique(opts: {
-    maintainOrder?: boolean;
     subset?: ColumnSelection;
-    keep?: "first" | "last";
-  }): LazyDataFrame;
+    keep?: "first" | "last" | "any" | "none";
+    maintainOrder?: boolean;
+  }): LazyDataFrame<S>;
   /**
    * Aggregate the columns in the DataFrame to their variance value.
    */
-  var(): LazyDataFrame;
+  var(): LazyDataFrame<S>;
   /**
    * Add or overwrite column in a DataFrame.
    * @param expr - Expression that evaluates to column.
    */
-  withColumn(expr: Expr): LazyDataFrame;
+  withColumn(expr: Expr | Series): LazyDataFrame;
   /**
    * Add or overwrite multiple columns in a DataFrame.
    * @param exprs - List of Expressions that evaluate to columns.
    *
    */
-  withColumns(exprs: (Expr | Series)[]): LazyDataFrame;
   withColumns(...exprs: (Expr | Series)[]): LazyDataFrame;
+  withColumnRenamed<Existing extends keyof S, New extends string>(
+    existing: Existing,
+    replacement: New,
+  ): LazyDataFrame<{ [K in keyof S as K extends Existing ? New : K]: S[K] }>;
   withColumnRenamed(existing: string, replacement: string): LazyDataFrame;
   /**
    * Add a column at index 0 that counts the rows.
    * @see {@link DataFrame.withRowCount}
+   * @deprecated *since 0.23.0 use withRowIndex instead
    */
-  withRowCount();
+  withRowCount(): LazyDataFrame;
+  /**
+   * Add a row index as the first column in the DataFrame.
+   * @param name Name of the index column.
+   * @param offset Start the index at this offset. Cannot be negative.
+   * @example
+   * 
+   * >>> ldf = pl.DataFrame(
+    ...     {
+    ...         "a": [1, 3, 5],
+    ...         "b": [2, 4, 6],
+    ...     }
+    ... ).lazy();
+    >>> ldf.withRowIndex().collectSync();
+    shape: (3, 3)
+    ┌───────┬─────┬─────┐
+    │ index ┆ a   ┆ b   │
+    │ ---   ┆ --- ┆ --- │
+    │ u32   ┆ i64 ┆ i64 │
+    ╞═══════╪═════╪═════╡
+    │ 0     ┆ 1   ┆ 2   │
+    │ 1     ┆ 3   ┆ 4   │
+    │ 2     ┆ 5   ┆ 6   │
+    └───────┴─────┴─────┘
+    >>> ldf.withRowIndex("id", offset=1000).collectSync();
+    shape: (3, 3)
+    ┌──────┬─────┬─────┐
+    │ id   ┆ a   ┆ b   │
+    │ ---  ┆ --- ┆ --- │
+    │ u32  ┆ i64 ┆ i64 │
+    ╞══════╪═════╪═════╡
+    │ 1000 ┆ 1   ┆ 2   │
+    │ 1001 ┆ 3   ┆ 4   │
+    │ 1002 ┆ 5   ┆ 6   │
+    └──────┴─────┴─────┘
+  */
+
+  withRowIndex(name?: string, offset?: number): LazyDataFrame;
   /***
   *
   * Evaluate the query in streaming mode and write to a CSV file.
@@ -475,95 +689,161 @@ export interface LazyDataFrame extends Serialize, GroupByOps<LazyGroupBy> {
     Parameters
     ----------
     @param path - File path to which the file should be written.
-    @param includeBom - Whether to include UTF-8 BOM in the CSV output.
-    @param includeHeader - Whether to include header in the CSV output.
-    @param separator - Separate CSV fields with this symbol.
-    @param lineTerminator - String used to end each row.
-    @param quoteChar - Byte to use as quoting character.
-    @param batchSize - Number of rows that will be processed per thread. Default - 1024
-    @param datetimeFormat - A format string, with the specifiers defined by the
+    @param options.includeBom - Whether to include UTF-8 BOM in the CSV output.
+    @param options.includeHeader - Whether to include header in the CSV output.
+    @param options.separator - Separate CSV fields with this symbol.
+    @param options.lineTerminator - String used to end each row.
+    @param options.quoteChar - Byte to use as quoting character. Default: '"'
+    @param options.batchSize - Number of rows that will be processed per thread. Default - 1024
+    @param options.datetimeFormat - A format string, with the specifiers defined by the
         `chrono <https://docs.rs/chrono/latest/chrono/format/strftime/index.html>`_
         Rust crate. If no format specified, the default fractional-second
         precision is inferred from the maximum timeunit found in the frame's
         Datetime cols (if any).
-    @param dateFormat - A format string, with the specifiers defined by the
+    @param options.dateFormat - A format string, with the specifiers defined by the
         `chrono <https://docs.rs/chrono/latest/chrono/format/strftime/index.html>`_
         Rust crate.
-    @param timeFormat A format string, with the specifiers defined by the
+    @param options.timeFormat A format string, with the specifiers defined by the
         `chrono <https://docs.rs/chrono/latest/chrono/format/strftime/index.html>`_
         Rust crate.
-    @param floatPrecision - Number of decimal places to write, applied to both `Float32` and `Float64` datatypes.
-    @param nullValue - A string representing null values (defaulting to the empty string).
-    @param quoteStyle - Determines the quoting strategy used. : {'necessary', 'always', 'non_numeric', 'never'}
-        - necessary (default): This puts quotes around fields only when necessary.
-          They are necessary when fields contain a quote,
-          delimiter or record terminator.
-          Quotes are also necessary when writing an empty record
-          (which is indistinguishable from a record with one empty field).
-          This is the default.
-        - always: This puts quotes around every field. Always.
-        - never: This never puts quotes around fields, even if that results in
-          invalid CSV data (e.g.: by not quoting strings containing the
-          separator).
-        - non_numeric: This puts quotes around all fields that are non-numeric.
-          Namely, when writing a field that does not parse as a valid float
-          or integer, then quotes will be used even if they aren`t strictly
-          necessary.
-    @param maintainOrder - Maintain the order in which data is processed.
+    @param options.floatPrecision - Number of decimal places to write, applied to both `Float32` and `Float64` datatypes.
+    @param options.nullValue - A string representing null values (defaulting to the empty string).
+    @param options.maintainOrder - Maintain the order in which data is processed.
         Setting this to `False` will  be slightly faster.
-
+    @return DataFrame
     Examples
     --------
     >>> const lf = pl.scanCsv("/path/to/my_larger_than_ram_file.csv")
-    >>> lf.sinkCsv("out.csv")
+    >>> lf.sinkCsv("out.csv").collect()
   */
 
-  sinkCSV(path: string, options?: SinkCsvOptions): void;
+  sinkCSV(path: string, options?: CsvWriterOptions): LazyDataFrame;
 
   /***
-   * 
+   *
    * Evaluate the query in streaming mode and write to a Parquet file.
-
-    .. warning::
-        Streaming mode is considered **unstable**. It may be changed
-        at any point without it being considered a breaking change.
 
     This allows streaming results that are larger than RAM to be written to disk.
 
     Parameters
     ----------
     @param path - File path to which the file should be written.
-    @param compression : {'lz4', 'uncompressed', 'snappy', 'gzip', 'lzo', 'brotli', 'zstd'}
+    @param options.compression : {'lz4', 'uncompressed', 'snappy', 'gzip', 'lzo', 'brotli', 'zstd'}
         Choose "zstd" for good compression performance. (default)
         Choose "lz4" for fast compression/decompression.
         Choose "snappy" for more backwards compatibility guarantees
         when you deal with older parquet readers.
-    @param compressionLevel - The level of compression to use. Higher compression means smaller files on disk.
+    @param options.compressionLevel - The level of compression to use. Higher compression means smaller files on disk.
         - "gzip" : min-level: 0, max-level: 10.
         - "brotli" : min-level: 0, max-level: 11.
         - "zstd" : min-level: 1, max-level: 22.
-    @param statistics - Write statistics to the parquet headers. This requires extra compute. Default - false
-    @param rowGroupSize - Size of the row groups in number of rows.
+    @param options.statistics - Write statistics to the parquet headers. This requires extra compute. Default - false
+    @param options.rowGroupSize - Size of the row groups in number of rows.
         If None (default), the chunks of the `DataFrame` are
         used. Writing in smaller chunks may reduce memory pressure and improve
         writing speeds.
-    @param dataPagesizeLimit - Size limit of individual data pages.
+    @param options.dataPagesizeLimit - Size limit of individual data pages.
         If not set defaults to 1024 * 1024 bytes
-    @param maintainOrder - Maintain the order in which data is processed. Default -> true
+    @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
         Setting this to `False` will  be slightly faster.
-    @param typeCoercion - Do type coercion optimization. Default -> true
-    @param predicatePushdown - Do predicate pushdown optimization. Default -> true
-    @param projectionPushdown - Do projection pushdown optimization. Default -> true
-    @param simplifyExpression - Run simplify expressions optimization. Default -> true
-    @param slicePushdown - Slice pushdown optimization. Default -> true
-    @param noOptimization - Turn off (certain) optimizations. Default -> false
+    @param options.typeCoercion - Do type coercion optimization. Default -> true
+    @param options.predicatePushdown - Do predicate pushdown optimization. Default -> true
+    @param options.projectionPushdown - Do projection pushdown optimization. Default -> true
+    @param options.simplifyExpression - Run simplify expressions optimization. Default -> true
+    @param options.slicePushdown - Slice pushdown optimization. Default -> true
+    @param options.noOptimization - Turn off (certain) optimizations. Default -> false
+    @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
+        If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
 
+        The cloud providers currently supported are AWS, GCP, and Azure.
+        See supported keys here:
+
+        * `aws <https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html>`_
+        * `gcp <https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html>`_
+        * `azure <https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html>`_
+
+        If `cloudOptions` is not provided, Polars will try to infer the information from environment variables.
+    @return DataFrame
     Examples
     --------
     >>> const lf = pl.scanCsv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
-    >>> lf.sinkParquet("out.parquet")  # doctest: +SKIP
+    >>> lf.sinkParquet("out.parquet").collect()  # doctest: +SKIP
    */
-  sinkParquet(path: string, options?: SinkParquetOptions): void;
+  sinkParquet(path: string, options?: SinkParquetOptions): LazyDataFrame;
+
+  /**
+   * 
+   * Evaluate the query in streaming mode and write to an NDJSON file.
+   * This allows streaming results that are larger than RAM to be written to disk.
+   * 
+   * Parameters
+    @param path - File path to which the file should be written.
+    @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
+        Setting this to `False` will  be slightly faster.
+    @param options.mkdir - Recursively create all the directories in the path. Default -> false
+    @param options.syncOnClose - { None, 'data', 'all' } Default -> 'all'
+            Sync to disk when before closing a file.
+
+            * `None` does not sync.
+            * `data` syncs the file contents.
+            * `all` syncs the file contents and metadata.
+    @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
+        If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
+
+        The cloud providers currently supported are AWS, GCP, and Azure.
+        See supported keys here:
+
+        * `aws <https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html>`_
+        * `gcp <https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html>`_
+        * `azure <https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html>`_
+
+        If `cloudOptions` is not provided, Polars will try to infer the information from environment variables.
+    @return DataFrame
+    Examples
+    --------
+    >>> const lf = pl.scanCsv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
+    >>> lf.sinkNdJson("out.ndjson").collect()
+   */
+  sinkNdJson(path: string, options?: SinkJsonOptions): LazyDataFrame;
+  /**
+   * 
+   * Evaluate the query in streaming mode and write to an IPC file.
+   * This allows streaming results that are larger than RAM to be written to disk.
+   * 
+   * Parameters
+    @param path - File path to which the file should be written.
+    @param options.compression : {'uncompressed', 'lz4', 'zstd'}
+            Choose "zstd" for good compression performance.
+            Choose "lz4" for fast compression/decompression.
+    @param options.compatLevel : { 'newest', 'oldest' } Default -> newest
+            Use a specific compatibility level when exporting Polars' internal data structures.
+    @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
+        Setting this to `False` will  be slightly faster.
+    @param options.mkdir - Recursively create all the directories in the path. Default -> false
+    @param options.syncOnClose - { None, 'data', 'all' } Default -> 'all'
+            Sync to disk when before closing a file.
+
+            * `None` does not sync.
+            * `data` syncs the file contents.
+            * `all` syncs the file contents and metadata.
+    @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
+        If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
+
+        The cloud providers currently supported are AWS, GCP, and Azure.
+        See supported keys here:
+
+        * `aws <https://docs.rs/object_store/latest/object_store/aws/enum.AmazonS3ConfigKey.html>`_
+        * `gcp <https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html>`_
+        * `azure <https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html>`_
+
+        If `cloudOptions` is not provided, Polars will try to infer the information from environment variables.
+    @return DataFrame
+    Examples
+    --------
+    >>> const lf = pl.scanCsv("/path/to/my_larger_than_ram_file.csv")  # doctest: +SKIP
+    >>> lf.sinkIpc("out.arrow").collect()
+   */
+  sinkIpc(path: string, options?: SinkIpcOptions): LazyDataFrame;
 }
 
 const prepareGroupbyInputs = (by) => {
@@ -601,6 +881,9 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     [inspect]() {
       return _ldf.describeOptimizedPlan();
     },
+    get [Symbol.toStringTag]() {
+      return "LazyDataFrame";
+    },
 
     get columns() {
       return _ldf.columns;
@@ -617,38 +900,65 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     clone() {
       return _LazyDataFrame((_ldf as any).clone());
     },
-    collectSync() {
-      return _DataFrame(_ldf.collectSync());
+    collectSync(opts?) {
+      return _DataFrame(_ldf.collectSync(opts?.engine ?? "auto"));
     },
-    collect() {
+    collect(opts?) {
+      if (opts?.noOptimization) {
+        opts.predicatePushdown = false;
+        opts.projectionPushdown = false;
+        opts.slicePushdown = false;
+        opts.commSubplanElim = false;
+        opts.commSubexprElim = false;
+      }
+
+      if (opts?.streaming) opts.commSubplanElim = false;
+
+      if (opts) {
+        _ldf = _ldf.optimizationToggle(
+          opts.typeCoercion,
+          opts.predicatePushdown,
+          opts.projectionPushdown,
+          opts.simplifyExpression,
+          opts.slicePushdown,
+          opts.commSubplanElim,
+          opts.commSubexprElim,
+          opts.streaming,
+        );
+      }
+
       return _ldf.collect().then(_DataFrame);
     },
     drop(...cols) {
       return _LazyDataFrame(_ldf.dropColumns(cols.flat(2)));
     },
-    distinct(...args: any[]) {
-      return _LazyDataFrame((_ldf.unique as any)(...args));
-    },
-    unique(opts: any = false, subset?, keep = "first") {
-      const defaultOptions = {
-        maintainOrder: false,
-        keep: "first",
-      };
+    unique(
+      opts?:
+        | ColumnSelection
+        | { subset?: ColumnSelection; keep?: string; maintainOrder?: boolean }
+        | null,
+      keep = "any",
+      maintainOrder = false,
+    ) {
+      // no arguments -> signal call with defaults
+      if (arguments.length === 0)
+        return _LazyDataFrame(_ldf.unique(null, keep, maintainOrder));
 
-      if (typeof opts === "boolean") {
-        const o = { ...defaultOptions, maintainOrder: opts, subset, keep };
+      // string -> single-element array
+      if (typeof opts === "string")
+        return _LazyDataFrame(_ldf.unique([opts], keep, maintainOrder));
 
-        return _LazyDataFrame(
-          _ldf.unique(o.maintainOrder, o?.subset?.flat(2), o.keep),
-        );
+      // array -> use as-is
+      if (Array.isArray(opts))
+        return _LazyDataFrame(_ldf.unique(opts, keep, maintainOrder));
+
+      // object -> merge defaults, normalize subset to array (if present)
+      if (opts && typeof opts === "object") {
+        const o = { keep, maintainOrder, ...(opts as any) };
+        const subset = o.subset ? ([o.subset].flat(3) as string[]) : undefined;
+        return _LazyDataFrame(_ldf.unique(subset, o.keep, o.maintainOrder));
       }
-
-      if (opts.subset) {
-        opts.subset = [opts.subset].flat(3);
-      }
-      const o = { ...defaultOptions, ...opts };
-
-      return _LazyDataFrame(_ldf.unique(o.maintainOrder, o.subset, o.keep));
+      throw new TypeError("You should pass valid unique argument.");
     },
     dropNulls(...subset) {
       if (subset.length) {
@@ -659,26 +969,30 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     explode(...columns) {
       if (!columns.length) {
         const cols = selectionToExprList(_ldf.columns, false);
-
         return wrap("explode", cols);
       }
       const column = selectionToExprList(columns, false);
-
       return wrap("explode", column);
     },
     fetchSync(numRows, opts?) {
       if (opts?.noOptimization) {
         opts.predicatePushdown = false;
         opts.projectionPushdown = false;
+        opts.slicePushdown = false;
+        opts.commSubplanElim = false;
+        opts.commSubexprElim = false;
       }
+      if (opts?.streaming) opts.commSubplanElim = false;
       if (opts) {
         _ldf = _ldf.optimizationToggle(
           opts.typeCoercion,
           opts.predicatePushdown,
           opts.projectionPushdown,
           opts.simplifyExpr,
-          opts.stringCache,
           opts.slicePushdown,
+          opts.commSubplanElim,
+          opts.commSubexprElim,
+          opts.streaming,
         );
       }
 
@@ -688,15 +1002,21 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
       if (opts?.noOptimization) {
         opts.predicatePushdown = false;
         opts.projectionPushdown = false;
+        opts.slicePushdown = false;
+        opts.commSubplanElim = false;
+        opts.commSubexprElim = false;
       }
+      if (opts?.streaming) opts.commSubplanElim = false;
       if (opts) {
         _ldf = _ldf.optimizationToggle(
           opts.typeCoercion,
           opts.predicatePushdown,
           opts.projectionPushdown,
           opts.simplifyExpr,
-          opts.stringCache,
           opts.slicePushdown,
+          opts.commSubplanElim,
+          opts.commSubexprElim,
+          opts.streaming,
         );
       }
 
@@ -715,28 +1035,23 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
 
       return _LazyDataFrame(_ldf.filter(predicate));
     },
-    groupBy(opt, maintainOrder: any = true): LazyGroupBy {
-      if (opt?.by !== undefined) {
-        const by = selectionToExprList([opt.by], false);
-
-        return _LazyGroupBy(_ldf.groupby(by, opt.maintainOrder));
+    groupBy(by, maintainOrder: any = true): LazyGroupBy {
+      if (maintainOrder?.maintainOrder !== undefined) {
+        maintainOrder = maintainOrder.maintainOrder;
       }
-      const by = selectionToExprList([opt], false);
-
-      return _LazyGroupBy(_ldf.groupby(by, maintainOrder));
+      const expr = selectionToExprList([by], false);
+      return _LazyGroupBy(_ldf.groupby(expr, maintainOrder));
     },
-    groupByRolling({ indexColumn, by, period, offset, closed, check_sorted }) {
+    groupByRolling({ indexColumn, by, period, offset, closed }) {
       offset = offset ?? `-${period}`;
       closed = closed ?? "right";
       by = prepareGroupbyInputs(by);
-      check_sorted = check_sorted ?? false;
       const lgb = _ldf.groupbyRolling(
         pli.col(indexColumn),
         period,
         offset,
         closed,
         by,
-        check_sorted,
       );
 
       return _LazyGroupBy(lgb);
@@ -748,34 +1063,35 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
       offset,
       includeBoundaries,
       closed,
+      label,
       by,
-      start_by,
-      check_sorted,
+      startBy,
     }) {
       period = period ?? every;
-      offset = offset ?? `-${period}`;
-      closed = closed ?? "right";
+      offset = offset ?? "0ns";
+      closed = closed ?? "left";
+      label = label ?? "left";
       by = prepareGroupbyInputs(by);
       includeBoundaries = includeBoundaries ?? false;
-      start_by = start_by ?? "monday";
-      check_sorted = check_sorted ?? false;
-
+      startBy = startBy ?? "monday";
       const lgb = _ldf.groupbyDynamic(
         pli.col(indexColumn),
         every,
         period,
         offset,
+        label,
         includeBoundaries,
         closed,
         by,
-        start_by,
-        check_sorted,
+        startBy,
       );
-
       return _LazyGroupBy(lgb);
     },
     head(len = 5) {
       return _LazyDataFrame(_ldf.slice(0, len));
+    },
+    inner() {
+      return _ldf;
     },
     join(df, options) {
       options = {
@@ -785,7 +1101,8 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
         forceParallel: false,
         ...options,
       };
-      const { how, suffix, allowParallel, forceParallel } = options;
+      const { how, suffix, allowParallel, forceParallel, coalesce, validate } =
+        options;
       if (how === "cross") {
         return _LazyDataFrame(
           _ldf.join(
@@ -796,6 +1113,8 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
             forceParallel,
             how,
             suffix,
+            coalesce,
+            validate,
             [],
             [],
           ),
@@ -827,6 +1146,8 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
         forceParallel,
         how,
         suffix,
+        coalesce,
+        validate,
         [],
         [],
       );
@@ -839,9 +1160,16 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
         allowParallel: true,
         forceParallel: false,
         strategy: "backward",
+        checkSortedness: true,
         ...options,
       };
-      const { suffix, strategy, allowParallel, forceParallel } = options;
+      const {
+        suffix,
+        strategy,
+        allowParallel,
+        forceParallel,
+        checkSortedness,
+      } = options;
       let leftOn: string | undefined;
       let rightOn: string | undefined;
       if (!other?._ldf) {
@@ -886,6 +1214,10 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
         toleranceNum = options.tolerance;
       }
 
+      if (!leftOn || !rightOn) {
+        throw new TypeError("Missing leftOn or rightOn join on argument.");
+      }
+
       const ldf = _ldf.joinAsof(
         other._ldf,
         pli.col(leftOn),
@@ -898,6 +1230,7 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
         strategy,
         toleranceNum,
         toleranceStr,
+        checkSortedness ?? true,
       );
 
       return _LazyDataFrame(ldf);
@@ -917,9 +1250,19 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     median() {
       return _LazyDataFrame(_ldf.median());
     },
-    melt(ids, values) {
+    unpivot(ids, values, options) {
+      options = {
+        variableName: null,
+        valueName: null,
+        ...options,
+      };
       return _LazyDataFrame(
-        _ldf.melt(columnOrColumnsStrict(ids), columnOrColumnsStrict(values)),
+        _ldf.unpivot(
+          columnOrColumnsStrict(ids),
+          columnOrColumnsStrict(values),
+          options.variableName,
+          options.valueName,
+        ),
       );
     },
     min() {
@@ -939,7 +1282,6 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     },
     select(...exprs) {
       const selections = selectionToExprList(exprs, false);
-
       return _LazyDataFrame(_ldf.select(selections));
     },
     shift(periods) {
@@ -957,17 +1299,20 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
       }
       return _LazyDataFrame(_ldf.slice(opt, len));
     },
-    sort(arg, descending = false, maintain_order = false) {
+    sort(arg, descending = false, nullsLast = false, maintainOrder = false) {
       if (arg?.by !== undefined) {
-        return this.sort(arg.by, arg.descending, arg.maintain_order);
+        return this.sort(
+          arg.by,
+          arg.descending,
+          arg.nullsLast,
+          arg.maintainOrder,
+        );
       }
       if (typeof arg === "string") {
-        return wrap("sort", arg, descending, maintain_order, true, false);
+        return wrap("sort", arg, descending, nullsLast, maintainOrder);
       }
-      descending = [descending].flat(3) as any;
       const by = selectionToExprList(arg, false);
-
-      return wrap("sortByExprs", by, descending, maintain_order, true);
+      return wrap("sortByExprs", by, descending, nullsLast, maintainOrder);
     },
     std() {
       return _LazyDataFrame(_ldf.std());
@@ -992,34 +1337,59 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     serialize(format) {
       return _ldf.serialize(format);
     },
-    withColumn(expr) {
-      return _LazyDataFrame(_ldf.withColumn(expr._expr));
+    withColumn(column: Expr | Series) {
+      return this.withColumns(column);
     },
-    withColumns(...columns) {
+    withColumns(...columns: (Expr | Series)[]) {
       const exprs = selectionToExprList(columns, false);
-
       return _LazyDataFrame(_ldf.withColumns(exprs));
     },
-    withColumnRenamed(existing, replacement) {
+    withColumnRenamed(existing: string, replacement: string) {
       return _LazyDataFrame(_ldf.rename([existing], [replacement]));
     },
     withRowCount(name = "row_nr") {
       return _LazyDataFrame(_ldf.withRowCount(name));
     },
-    sinkCSV(path, options: SinkCsvOptions = {}) {
-      options.maintainOrder = options.maintainOrder ?? false;
-      _ldf.sinkCsv(path, options);
+    withRowIndex(name = "index", offset = 0) {
+      return _LazyDataFrame(_ldf.withRowIndex(name, offset));
+    },
+    sinkCSV(path, options: CsvWriterOptions) {
+      return _ldf.sinkCsv(path, { ...writeCsvDefaultOptions, ...options });
     },
     sinkParquet(path: string, options: SinkParquetOptions = {}) {
       options.compression = options.compression ?? "zstd";
-      _ldf.sinkParquet(path, options);
+      options.statistics = options.statistics ?? false;
+      options.sinkOptions = options.sinkOptions ?? {
+        syncOnClose: "all",
+        maintainOrder: false,
+        mkdir: true,
+      };
+      return _ldf.sinkParquet(path, options);
+    },
+    sinkNdJson(path: string, options: SinkJsonOptions = {}) {
+      options.syncOnClose = options.syncOnClose ?? "all";
+      options.maintainOrder = options.maintainOrder ?? true;
+      options.mkdir = options.mkdir ?? true;
+      return _ldf.sinkJson(path, options);
+    },
+    sinkIpc(path: string, options: SinkIpcOptions = {}) {
+      options.compatLevel = options.compatLevel ?? "newest";
+      options.compression = options.compression ?? "uncompressed";
+      options.syncOnClose = options.syncOnClose ?? "all";
+      options.maintainOrder = options.maintainOrder ?? true;
+      options.mkdir = options.mkdir ?? true;
+      return _ldf.sinkIpc(path, options);
     },
   };
 };
 
 export interface LazyDataFrameConstructor extends Deserialize<LazyDataFrame> {
   fromExternal(external: any): LazyDataFrame;
+  isLazyDataFrame(arg: any): arg is LazyDataFrame;
 }
+
+const isLazyDataFrame = (anyVal: any): anyVal is LazyDataFrame =>
+  anyVal?.[Symbol.toStringTag] === "LazyDataFrame";
 
 /** @ignore */
 export const LazyDataFrame: LazyDataFrameConstructor = Object.assign(
@@ -1030,5 +1400,6 @@ export const LazyDataFrame: LazyDataFrameConstructor = Object.assign(
     fromExternal(external) {
       return _LazyDataFrame(pli.JsLazyFrame.cloneExternal(external));
     },
+    isLazyDataFrame,
   },
 );

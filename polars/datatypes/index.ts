@@ -1,8 +1,9 @@
-import { DataType, TimeUnit } from "./datatype";
-export { DataType, TimeUnit };
+export * from "./conversion";
+export * from "./datatype";
 export { Field } from "./field";
 
 import pli from "../internals/polars_internal";
+import { type DataType, Time } from "./datatype";
 
 /** @ignore */
 export type TypedArray =
@@ -48,6 +49,7 @@ export const DTYPE_TO_FFINAME = {
   List: "List",
   Date: "Date",
   Datetime: "Datetime",
+  Duration: "Duration",
   Time: "Time",
   Object: "Object",
   Categorical: "Categorical",
@@ -55,55 +57,61 @@ export const DTYPE_TO_FFINAME = {
 };
 
 const POLARS_TYPE_TO_CONSTRUCTOR: Record<string, any> = {
-  Float32(name, values, strict?) {
-    return pli.JsSeries.newOptF64(name, values, strict);
+  Float32(name, values) {
+    return pli.JsSeries.newOptF64(name, values);
   },
-  Float64(name, values, strict?) {
-    return pli.JsSeries.newOptF64(name, values, strict);
+  Float64(name, values) {
+    return pli.JsSeries.newOptF64(name, values);
   },
-  Int8(name, values, strict?) {
-    return pli.JsSeries.newOptI32(name, values, strict);
+  Int8(name, values) {
+    return pli.JsSeries.newOptI32(name, values);
   },
-  Int16(name, values, strict?) {
-    return pli.JsSeries.newOptI32(name, values, strict);
+  Int16(name, values) {
+    return pli.JsSeries.newOptI32(name, values);
   },
-  Int32(name, values, strict?) {
-    return pli.JsSeries.newOptI32(name, values, strict);
+  Int32(name, values) {
+    return pli.JsSeries.newOptI32(name, values);
   },
-  Int64(name, values, strict?) {
-    return pli.JsSeries.newOptI64(name, values, strict);
+  Int64(name, values) {
+    return pli.JsSeries.newOptI64(name, values);
   },
-  UInt8(name, values, strict?) {
-    return pli.JsSeries.newOptU32(name, values, strict);
+  UInt8(name, values) {
+    return pli.JsSeries.newOptU32(name, values);
   },
-  UInt16(name, values, strict?) {
-    return pli.JsSeries.newOptU32(name, values, strict);
+  UInt16(name, values) {
+    return pli.JsSeries.newOptU32(name, values);
   },
-  UInt32(name, values, strict?) {
-    return pli.JsSeries.newOptU32(name, values, strict);
+  UInt32(name, values) {
+    return pli.JsSeries.newOptU32(name, values);
   },
-  UInt64(name, values, strict?) {
-    return pli.JsSeries.newOptU64(name, values, strict);
+  UInt64(name, values) {
+    return pli.JsSeries.newOptU64(name, values);
   },
-  Date(name, values, strict?) {
-    return pli.JsSeries.newOptI64(name, values, strict);
+  Date(name, values) {
+    return pli.JsSeries.newOptI64(name, values);
   },
-  Datetime(name, values, strict?) {
-    return pli.JsSeries.newOptI64(name, values, strict);
+  Datetime(name, values) {
+    return pli.JsSeries.newOptI64(name, values);
   },
-  Bool(name, values, strict?) {
-    return pli.JsSeries.newOptBool(name, values, strict);
+  Time(name, values) {
+    return pli.JsSeries.newAnyValue(name, values, Time);
   },
-  Utf8(name, values, strict?) {
-    return (pli.JsSeries.newOptStr as any)(name, values, strict);
+  Bool(name, values) {
+    return pli.JsSeries.newOptBool(name, values);
   },
-  String(name, values, strict?) {
-    return (pli.JsSeries.newOptStr as any)(name, values, strict);
+  Utf8(name, values) {
+    return (pli.JsSeries.newOptStr as any)(name, values);
   },
-  Categorical(name, values, strict?) {
-    return (pli.JsSeries.newOptStr as any)(name, values, strict);
+  String(name, values) {
+    return (pli.JsSeries.newOptStr as any)(name, values);
   },
-  List(name, values, _strict, dtype) {
+  Categorical(name, values) {
+    return (pli.JsSeries.newOptStr as any)(name, values);
+  },
+  List(name, values, dtype: DataType) {
+    return pli.JsSeries.newList(name, values, dtype);
+  },
+  FixedSizeList(name, values, dtype: DataType) {
     return pli.JsSeries.newList(name, values, dtype);
   },
 };

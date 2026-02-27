@@ -1,5 +1,6 @@
+import path from "node:path";
 import pl from "@polars";
-import path from "path";
+
 // eslint-disable-next-line no-undef
 const csvpath = path.resolve(__dirname, "./examples/datasets/foods1.csv");
 describe("serde", () => {
@@ -12,7 +13,7 @@ describe("serde", () => {
     expect(actual).toFrameEqual(expected);
   });
 
-  test.skip("lazyframe:bincode", () => {
+  test("lazyframe:bincode", () => {
     const df = pl.scanCSV(csvpath);
     const buf = df.serialize("bincode");
     const deserde = pl.LazyDataFrame.deserialize(buf, "bincode");

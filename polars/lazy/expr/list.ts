@@ -1,13 +1,14 @@
-import { Expr, _Expr, exprToLitOrExpr } from "../expr";
-import type { ListFunctions } from "../../shared_traits";
-import { Series } from "../../series";
 import pli from "../../internals/polars_internal";
+import { Series } from "../../series";
+import type { ListFunctions } from "../../shared_traits";
+import { _Expr, Expr, exprToLitOrExpr } from "../expr";
 import { concatList } from "../functions";
 
 /**
- * namespace containing expr list functions
+ * List functions for Lazy dataframes
  */
-export type ExprList = ListFunctions<Expr>;
+export interface ExprList extends ListFunctions<Expr> {}
+
 export const ExprListFunctions = (_expr: any): ExprList => {
   const wrap = (method, ...args: any[]): Expr => {
     return _Expr(_expr[method](...args));
@@ -41,17 +42,21 @@ export const ExprListFunctions = (_expr: any): ExprList => {
 
       return concatList(otherList);
     },
-    contains(item) {
-      return wrap("listContains", exprToLitOrExpr(item)._expr);
+    contains(item, nullsEqual?: boolean) {
+      return wrap(
+        "listContains",
+        exprToLitOrExpr(item)._expr,
+        nullsEqual ?? true,
+      );
     },
     diff(n = 1, nullBehavior = "ignore") {
       return wrap("listDiff", n, nullBehavior);
     },
-    get(index: number | Expr) {
+    get(index: number | Expr, nullOnOob?: boolean) {
       if (Expr.isExpr(index)) {
-        return wrap("listGet", index._expr);
+        return wrap("listGet", index._expr, nullOnOob ?? true);
       }
-      return wrap("listGet", pli.lit(index));
+      return wrap("listGet", pli.lit(index), nullOnOob ?? true);
     },
     head(n = 5) {
       return this.slice(0, n);
@@ -59,11 +64,11 @@ export const ExprListFunctions = (_expr: any): ExprList => {
     tail(n = 5) {
       return this.slice(-n, n);
     },
-    eval(expr, parallel = true) {
+    eval(expr) {
       if (Expr.isExpr(expr)) {
-        return wrap("listEval", expr._expr, parallel);
+        return wrap("listEval", expr._expr);
       }
-      return wrap("listEval", expr, parallel);
+      return wrap("listEval", expr);
     },
     first() {
       return this.get(0);
@@ -110,10 +115,10 @@ export const ExprListFunctions = (_expr: any): ExprList => {
         exprToLitOrExpr(length)._expr,
       );
     },
-    sort(reverse: any = false) {
-      return typeof reverse === "boolean"
-        ? wrap("listSort", reverse)
-        : wrap("listSort", reverse.reverse);
+    sort(descending: any = false) {
+      return typeof descending === "boolean"
+        ? wrap("listSort", descending)
+        : wrap("listSort", descending.descending);
     },
     sum() {
       return wrap("listSum");

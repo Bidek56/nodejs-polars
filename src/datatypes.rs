@@ -1,5 +1,7 @@
 use crate::prelude::*;
 use crate::series::JsSeries;
+use napi::bindgen_prelude::TypedArrayType;
+
 #[napi(js_name = "DataType")]
 pub enum JsDataType {
     Int8,
@@ -19,6 +21,7 @@ pub enum JsDataType {
     Date,
     Datetime,
     Time,
+    Duration,
     Object,
     Categorical,
     Struct,
@@ -43,6 +46,7 @@ impl JsDataType {
             "Date" => JsDataType::Date,
             "Datetime" => JsDataType::Datetime,
             "Time" => JsDataType::Time,
+            "Duration" => JsDataType::Duration,
             "Object" => JsDataType::Object,
             "Categorical" => JsDataType::Categorical,
             "Struct" => JsDataType::Struct,
@@ -71,6 +75,7 @@ impl From<&DataType> for JsDataType {
             DataType::Date => Date,
             DataType::Datetime(_, _) => Datetime,
             DataType::Time => Time,
+            DataType::Duration(_) => Duration,
             DataType::Object(..) => Object,
             DataType::Categorical(..) => Categorical,
             DataType::Struct(_) => Struct,
@@ -79,9 +84,9 @@ impl From<&DataType> for JsDataType {
     }
 }
 
-impl From<napi::TypedArrayType> for JsDataType {
-    fn from(dt: napi::TypedArrayType) -> Self {
-        use napi::TypedArrayType::*;
+impl From<TypedArrayType> for JsDataType {
+    fn from(dt: TypedArrayType) -> Self {
+        use napi::bindgen_prelude::TypedArrayType::*;
         match dt {
             Int8 => JsDataType::Int8,
             Uint8 => JsDataType::UInt8,
@@ -171,14 +176,14 @@ impl<'a> FromNapiValue for Wrap<AnyValue<'a>> {
             ValueType::Object => {
                 if let Ok(vals) = Vec::<Wrap<AnyValue>>::from_napi_value(env, napi_val) {
                     let vals = std::mem::transmute::<_, Vec<AnyValue>>(vals);
-                    let s = Series::new("", vals);
+                    let s = Series::new(PlSmallStr::EMPTY, vals);
                     AnyValue::List(s)
                 } else if let Ok(s) = <&JsSeries>::from_napi_value(env, napi_val) {
                     AnyValue::List(s.series.clone())
                 } else if let Ok(d) = napi::JsDate::from_napi_value(env, napi_val) {
                     let d = d.value_of()?;
                     let dt = d as i64;
-                    AnyValue::Datetime(dt, TimeUnit::Milliseconds, &None)
+                    AnyValue::Datetime(dt, TimeUnit::Milliseconds, None)
                 } else {
                     return Err(Error::new(
                         Status::InvalidArg,
@@ -231,22 +236,24 @@ impl ToNapiValue for JsAnyValue {
             JsAnyValue::String(s) => String::to_napi_value(env, s),
             JsAnyValue::Date(v) => {
                 let mut ptr = std::ptr::null_mut();
-
+                let epoch_time: f64 = (v as f64) * 86400000.0;
                 check_status!(
-                    napi::sys::napi_create_date(env, v as f64, &mut ptr),
+                    napi::sys::napi_create_date(env, epoch_time, &mut ptr),
                     "Failed to convert rust type `AnyValue::Date` into napi value",
                 )?;
-
                 Ok(ptr)
             }
-            JsAnyValue::Datetime(v, _, _) => {
+            JsAnyValue::Datetime(v, time_unit, _) => {
                 let mut ptr = std::ptr::null_mut();
-
+                let epoch_time: f64 = match time_unit {
+                    TimeUnit::Milliseconds => v as f64,
+                    TimeUnit::Microseconds => (v / 1000) as f64,
+                    TimeUnit::Nanoseconds => (v / 1_000_000) as f64,
+                };
                 check_status!(
-                    napi::sys::napi_create_date(env, v as f64, &mut ptr),
+                    napi::sys::napi_create_date(env, epoch_time, &mut ptr),
                     "Failed to convert rust type `AnyValue::Date` into napi value",
                 )?;
-
                 Ok(ptr)
             }
             JsAnyValue::Duration(v, _) => i64::to_napi_value(env, v),
@@ -277,8 +284,8 @@ impl<'a> From<JsAnyValue> for AnyValue<'a> {
             JsAnyValue::Float32(v) => AnyValue::Float32(v),
             JsAnyValue::Float64(v) => AnyValue::Float64(v),
             JsAnyValue::Date(v) => AnyValue::Date(v),
-            JsAnyValue::Datetime(v, w, _) => AnyValue::Datetime(v, w, &None),
-            JsAnyValue::Duration(v, _) => AnyValue::Duration(v, TimeUnit::Milliseconds),
+            JsAnyValue::Datetime(v, w, _) => AnyValue::Datetime(v, w, None),
+            JsAnyValue::Duration(v, w) => AnyValue::Duration(v, w),
             JsAnyValue::Time(v) => AnyValue::Time(v),
             JsAnyValue::List(v) => AnyValue::List(v),
             _ => todo!(), // JsAnyValue::Struct(v) => AnyValue::Struct(v),
@@ -304,7 +311,7 @@ impl From<AnyValue<'_>> for JsAnyValue {
             AnyValue::Float64(v) => JsAnyValue::Float64(v),
             AnyValue::Date(v) => JsAnyValue::Date(v),
             AnyValue::Datetime(v, w, _) => JsAnyValue::Datetime(v, w, None),
-            AnyValue::Duration(v, _) => JsAnyValue::Duration(v, TimeUnit::Milliseconds),
+            AnyValue::Duration(v, w) => JsAnyValue::Duration(v, w),
             AnyValue::Time(v) => JsAnyValue::Time(v),
             AnyValue::List(v) => JsAnyValue::List(v),
             _ => todo!(), // JsAnyValue::Struct(v) => AnyValue::Struct(v),
@@ -330,8 +337,8 @@ impl From<&JsAnyValue> for DataType {
             JsAnyValue::Float64(_) => DataType::Float64,
             JsAnyValue::Date(_) => DataType::Date,
             JsAnyValue::Datetime(_, _, _) => DataType::Datetime(TimeUnit::Milliseconds, None),
-            JsAnyValue::Duration(_, _) => DataType::Duration(TimeUnit::Milliseconds),
             JsAnyValue::Time(_) => DataType::Time,
+            JsAnyValue::Duration(_, _) => DataType::Duration(TimeUnit::Milliseconds),
             _ => todo!(), // JsAnyValue::Struct(v) => AnyValue::Struct(v),
         }
     }
@@ -399,8 +406,16 @@ impl Into<DataType> for JsDataType {
             JsDataType::Date => Date,
             JsDataType::Datetime => Datetime(TimeUnit::Milliseconds, None),
             JsDataType::Time => Time,
-            JsDataType::Object => Object("object", None),
-            JsDataType::Categorical => Categorical(None, Default::default()),
+            JsDataType::Duration => DataType::Duration(TimeUnit::Microseconds),
+            JsDataType::Object => Object("object"),
+            JsDataType::Categorical => {
+                let categories = Categories::new(
+                    PlSmallStr::EMPTY,
+                    PlSmallStr::EMPTY,
+                    CategoricalPhysical::U32,
+                );
+                DataType::Categorical(categories.clone(), categories.clone().mapping())
+            }
             JsDataType::Struct => Struct(vec![]),
         }
     }

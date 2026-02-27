@@ -1,8 +1,9 @@
+import path from "node:path";
+import { isRegExp } from "node:util/types";
+import { DataFrame } from "./dataframe";
+import { LazyDataFrame } from "./lazy/dataframe";
 import { Expr, exprToLitOrExpr } from "./lazy/expr";
 import { Series } from "./series";
-import { DataFrame } from "./dataframe";
-import path from "path";
-import { isExternal, isRegExp } from "util/types";
 /** @ignore */
 export type ValueOrArray<T> = T | Array<ValueOrArray<T>>;
 /** @ignore */
@@ -14,7 +15,19 @@ export type ColumnsOrExpr = ColumnSelection | ExpressionSelection;
 /** @ignore */
 export type ExprOrString = Expr | string;
 
-export type StartBy = "window" | "datapoint" | "monday";
+/**
+ * @typeParam StartBy - The strategy to determine the start of the first window by.
+ */
+export type StartBy =
+  | "window"
+  | "datapoint"
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
 
 /** @ignore */
 export function columnOrColumns(
@@ -52,7 +65,9 @@ export const range = (start: number, end: number) => {
 
 export const isDataFrameArray = (ty: any): ty is DataFrame[] =>
   Array.isArray(ty) && DataFrame.isDataFrame(ty[0]);
-export const isSeriesArray = <T>(ty: any): ty is Series[] =>
+export const isLazyDataFrameArray = (ty: any): ty is LazyDataFrame[] =>
+  Array.isArray(ty) && LazyDataFrame.isLazyDataFrame(ty[0]);
+export const isSeriesArray = <_T>(ty: any): ty is Series[] =>
   Array.isArray(ty) && ty.every(Series.isSeries);
 export const isExprArray = (ty: any): ty is Expr[] =>
   Array.isArray(ty) && Expr.isExpr(ty[0]);
@@ -73,4 +88,10 @@ export const regexToString = (r: string | RegExp): string => {
   return r;
 };
 
+// find common value in array of arrays of strings: string[][]
+export const commonValue = (...arr: string[][]): string[] =>
+  arr[0].filter((x) => arr.every((y) => y.includes(x)));
+
 export const INSPECT_SYMBOL = Symbol.for("nodejs.util.inspect.custom");
+
+export type Simplify<T> = { [K in keyof T]: T[K] } & {};

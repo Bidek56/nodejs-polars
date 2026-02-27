@@ -1,9 +1,8 @@
 import { Field } from "./field";
 
-export abstract class DataType {
-  get variant() {
-    return this.constructor.name.slice(1);
-  }
+export abstract class DataType<Dtype extends DataTypeName = any> {
+  declare readonly __dtype: Dtype;
+  abstract readonly variant: DataTypeName;
   protected identity = "DataType";
   protected get inner(): null | any[] {
     return null;
@@ -17,110 +16,122 @@ export abstract class DataType {
   }
 
   /** Null type */
-  public static get Null(): DataType {
-    return new _Null();
+  public static get Null() {
+    return new Null();
   }
   /** `true` and `false`. */
-  public static get Bool(): DataType {
-    return new _Bool();
+  public static get Bool() {
+    return new Bool();
   }
   /** An `i8` */
-  public static get Int8(): DataType {
-    return new _Int8();
+  public static get Int8() {
+    return new Int8();
   }
   /** An `i16` */
-  public static get Int16(): DataType {
-    return new _Int16();
+  public static get Int16() {
+    return new Int16();
   }
   /** An `i32` */
-  public static get Int32(): DataType {
-    return new _Int32();
+  public static get Int32() {
+    return new Int32();
   }
   /** An `i64` */
-  public static get Int64(): DataType {
-    return new _Int64();
+  public static get Int64() {
+    return new Int64();
   }
   /** An `u8` */
-  public static get UInt8(): DataType {
-    return new _UInt8();
+  public static get UInt8() {
+    return new UInt8();
   }
   /** An `u16` */
-  public static get UInt16(): DataType {
-    return new _UInt16();
+  public static get UInt16() {
+    return new UInt16();
   }
   /** An `u32` */
-  public static get UInt32(): DataType {
-    return new _UInt32();
+  public static get UInt32() {
+    return new UInt32();
   }
   /** An `u64` */
-  public static get UInt64(): DataType {
-    return new _UInt64();
+  public static get UInt64() {
+    return new UInt64();
   }
 
   /** A `f32` */
-  public static get Float32(): DataType {
-    return new _Float32();
+  public static get Float32() {
+    return new Float32();
   }
   /** A `f64` */
-  public static get Float64(): DataType {
-    return new _Float64();
+  public static get Float64() {
+    return new Float64();
   }
-  public static get Date(): DataType {
-    return new _Date();
+  public static get Date() {
+    return new Date();
   }
   /** Time of day type */
-  public static get Time(): DataType {
-    return new _Time();
+  public static get Time() {
+    return new Time();
   }
   /** Type for wrapping arbitrary JS objects */
-  public static get Object(): DataType {
-    return new _Object();
+  public static get Object() {
+    return new Object_();
   }
   /** A categorical encoding of a set of strings  */
-  public static get Categorical(): DataType {
-    return new _Categorical();
+  public static get Categorical() {
+    return new Categorical();
   }
 
+  /** Decimal type */
+  public static Decimal(precision?: number, scale?: number) {
+    return new Decimal(precision, scale);
+  }
   /**
    * Calendar date and time type
    * @param timeUnit any of 'ms' | 'ns' | 'us'
    * @param timeZone timezone string as defined by Intl.DateTimeFormat `America/New_York` for example.
-   *
    */
-  public static Datetime(timeUnit: TimeUnit, timeZone?): DataType;
-  public static Datetime(timeUnit: "ms" | "ns" | "us", timeZone?): DataType;
   public static Datetime(
-    timeUnit,
+    timeUnit?: TimeUnit | "ms" | "ns" | "us",
     timeZone: string | null | undefined = null,
-  ): DataType {
-    return new _Datetime(timeUnit, timeZone as any);
+  ) {
+    return new Datetime(timeUnit ?? "ms", timeZone);
   }
+  public static Duration(timeUnit: TimeUnit | "ms" | "ns" | "us") {
+    return new Duration(timeUnit);
+  }
+
   /**
    * Nested list/array type
    *
    * @param inner The `DataType` of values within the list
    *
    */
-  public static List(inner: DataType): DataType {
-    return new _List(inner);
+  public static List(inner: DataType) {
+    return new List(inner);
+  }
+
+  /**
+   * List of fixed length
+   * This is called `Array` in other polars implementations, but `Array` is widely used in JS, so we use `FixedSizeList` instead.
+   *
+   */
+  public static FixedSizeList(inner: DataType, listSize: number) {
+    return new FixedSizeList(inner, listSize);
   }
   /**
    * Struct type
    */
   public static Struct(fields: Field[]): DataType;
   public static Struct(fields: { [key: string]: DataType }): DataType;
-  public static Struct(
-    fields: Field[] | { [key: string]: DataType },
-  ): DataType {
-    return new _Struct(fields);
+  public static Struct(fields: Field[] | { [key: string]: DataType }) {
+    return new Struct(fields);
   }
   /** A variable-length UTF-8 encoded string whose offsets are represented as `i64`. */
-  public static get Utf8(): DataType {
-    return new _Utf8();
+  public static get Utf8() {
+    return new Utf8();
   }
 
-  public static get String(): DataType {
-    return new _String();
+  public static get String() {
+    return new String();
   }
 
   toString() {
@@ -129,9 +140,9 @@ export abstract class DataType {
     }
     return `${this.identity}(${this.variant})`;
   }
+
   toJSON() {
     const inner = (this as any).inner;
-
     if (inner) {
       return {
         [this.identity]: {
@@ -144,40 +155,138 @@ export abstract class DataType {
     };
   }
   [Symbol.for("nodejs.util.inspect.custom")]() {
-    return this.toJSON();
+    return this.toString();
   }
-  static from(obj): DataType {
-    return null as any;
+  asFixedSizeList() {
+    if (this instanceof FixedSizeList) {
+      return this;
+    }
+    return null;
   }
 }
 
-class _Null extends DataType {}
-class _Bool extends DataType {}
-class _Int8 extends DataType {}
-class _Int16 extends DataType {}
-class _Int32 extends DataType {}
-class _Int64 extends DataType {}
-class _UInt8 extends DataType {}
-class _UInt16 extends DataType {}
-class _UInt32 extends DataType {}
-class _UInt64 extends DataType {}
-class _Float32 extends DataType {}
-class _Float64 extends DataType {}
-class _Date extends DataType {}
-class _Time extends DataType {}
-class _Object extends DataType {}
-class _Utf8 extends DataType {}
-class _String extends DataType {}
+export class Null extends DataType<"Null"> {
+  declare __dtype: "Null";
+  readonly variant = "Null";
+}
 
-class _Categorical extends DataType {}
+export class Bool extends DataType<"Bool"> {
+  declare __dtype: "Bool";
+  readonly variant = "Bool";
+}
+export class Int8 extends DataType<"Int8"> {
+  declare __dtype: "Int8";
+  readonly variant = "Int8";
+}
+export class Int16 extends DataType<"Int16"> {
+  declare __dtype: "Int16";
+  readonly variant = "Int16";
+}
+export class Int32 extends DataType<"Int32"> {
+  declare __dtype: "Int32";
+  readonly variant = "Int32";
+}
+export class Int64 extends DataType<"Int64"> {
+  declare __dtype: "Int64";
+  readonly variant = "Int64";
+}
+export class UInt8 extends DataType<"UInt8"> {
+  declare __dtype: "UInt8";
+  readonly variant = "UInt8";
+}
+export class UInt16 extends DataType<"UInt16"> {
+  declare __dtype: "UInt16";
+  readonly variant = "UInt16";
+}
+export class UInt32 extends DataType<"UInt32"> {
+  declare __dtype: "UInt32";
+  readonly variant = "UInt32";
+}
+export class UInt64 extends DataType<"UInt64"> {
+  declare __dtype: "UInt64";
+  readonly variant = "UInt64";
+}
+export class Float32 extends DataType<"Float32"> {
+  declare __dtype: "Float32";
+  readonly variant = "Float32";
+}
+export class Float64 extends DataType<"Float64"> {
+  declare __dtype: "Float64";
+  readonly variant = "Float64";
+}
+
+// biome-ignore lint/suspicious/noShadowRestrictedNames: Using Polars Date
+export class Date extends DataType<"Date"> {
+  declare __dtype: "Date";
+  readonly variant = "Date";
+}
+export class Time extends DataType<"Time"> {
+  declare __dtype: "Time";
+  readonly variant = "Time";
+}
+export class Object_ extends DataType<"Object"> {
+  declare __dtype: "Object";
+  readonly variant = "Object";
+}
+export class Utf8 extends DataType<"Utf8"> {
+  declare __dtype: "Utf8";
+  readonly variant = "Utf8";
+}
+// biome-ignore lint/suspicious/noShadowRestrictedNames: Using Polars String
+export class String extends DataType<"String"> {
+  declare __dtype: "String";
+  readonly variant = "String";
+}
+
+export class Categorical extends DataType<"Categorical"> {
+  declare __dtype: "Categorical";
+  readonly variant = "Categorical";
+}
+
+export class Decimal extends DataType<"Decimal"> {
+  declare __dtype: "Decimal";
+  readonly variant = "Decimal";
+  private precision: number | null;
+  private scale: number | null;
+  constructor(precision?: number, scale?: number) {
+    super();
+    this.precision = precision ?? null;
+    this.scale = scale ?? null;
+  }
+  override get inner() {
+    return [this.precision, this.scale];
+  }
+  override equals(other: DataType): boolean {
+    if (other.variant === this.variant) {
+      return (
+        this.precision === (other as Decimal).precision &&
+        this.scale === (other as Decimal).scale
+      );
+    }
+    return false;
+  }
+
+  override toJSON() {
+    return {
+      [this.identity]: {
+        [this.variant]: {
+          precision: this.precision,
+          scale: this.scale,
+        },
+      },
+    };
+  }
+}
 
 /**
  * Datetime type
  */
-class _Datetime extends DataType {
+export class Datetime extends DataType<"Datetime"> {
+  declare __dtype: "Datetime";
+  readonly variant = "Datetime";
   constructor(
-    private timeUnit: TimeUnit,
-    private timeZone?: string,
+    private timeUnit: TimeUnit | "ms" | "ns" | "us" = "ms",
+    private timeZone?: string | null,
   ) {
     super();
   }
@@ -188,15 +297,35 @@ class _Datetime extends DataType {
   override equals(other: DataType): boolean {
     if (other.variant === this.variant) {
       return (
-        this.timeUnit === (other as _Datetime).timeUnit &&
-        this.timeZone === (other as _Datetime).timeZone
+        this.timeUnit === (other as Datetime).timeUnit &&
+        this.timeZone === (other as Datetime).timeZone
       );
     }
     return false;
   }
 }
 
-class _List extends DataType {
+export class Duration extends DataType<"Duration"> {
+  declare __dtype: "Duration";
+  readonly variant = "Duration";
+  constructor(private timeUnit: TimeUnit | "ms" | "ns" | "us" = "ms") {
+    super();
+  }
+  override get inner() {
+    return [this.timeUnit];
+  }
+
+  override equals(other: Duration): boolean {
+    if (other.variant === this.variant) {
+      return this.timeUnit === (other as Duration).timeUnit;
+    }
+    return false;
+  }
+}
+
+export class List extends DataType<"List"> {
+  declare __dtype: "List";
+  readonly variant = "List";
   constructor(protected __inner: DataType) {
     super();
   }
@@ -205,13 +334,50 @@ class _List extends DataType {
   }
   override equals(other: DataType): boolean {
     if (other.variant === this.variant) {
-      return this.inner[0].equals((other as _List).inner[0]);
+      return this.inner[0].equals((other as List).inner[0]);
     }
     return false;
   }
 }
 
-class _Struct extends DataType {
+export class FixedSizeList extends DataType<"FixedSizeList"> {
+  declare __dtype: "FixedSizeList";
+  readonly variant = "FixedSizeList";
+  constructor(
+    protected __inner: DataType,
+    protected listSize: number,
+  ) {
+    super();
+  }
+
+  override get inner(): [DataType, number] {
+    return [this.__inner, this.listSize];
+  }
+
+  override equals(other: DataType): boolean {
+    if (other.variant === this.variant) {
+      return (
+        this.inner[0].equals((other as FixedSizeList).inner[0]) &&
+        this.inner[1] === (other as FixedSizeList).inner[1]
+      );
+    }
+    return false;
+  }
+  override toJSON() {
+    return {
+      [this.identity]: {
+        [this.variant]: {
+          type: this.inner[0].toJSON(),
+          size: this.inner[1],
+        },
+      },
+    };
+  }
+}
+
+export class Struct extends DataType<"Struct"> {
+  declare __dtype: "Struct";
+  readonly variant = "Struct";
   private fields: Field[];
 
   constructor(
@@ -235,7 +401,7 @@ class _Struct extends DataType {
     if (other.variant === this.variant) {
       return this.inner
         .map((fld, idx) => {
-          const otherfld = (other as _Struct).fields[idx];
+          const otherfld = (other as Struct).fields[idx];
 
           return otherfld.name === fld.name && otherfld.dtype.equals(fld.dtype);
         })
@@ -275,52 +441,40 @@ export namespace TimeUnit {
  * Datatype namespace
  */
 export namespace DataType {
-  /** Null */
-  export type Null = _Null;
-  /** Boolean */
-  export type Bool = _Bool;
-  /** Int8 */
-  export type Int8 = _Int8;
-  /** Int16 */
-  export type Int16 = _Int16;
-  /** Int32 */
-  export type Int32 = _Int32;
-  /** Int64 */
-  export type Int64 = _Int64;
-  /** UInt8 */
-  export type UInt8 = _UInt8;
-  /** UInt16 */
-  export type UInt16 = _UInt16;
-  /** UInt32 */
-  export type UInt32 = _UInt32;
-  /** UInt64 */
-  export type UInt64 = _UInt64;
-  /** Float32 */
-  export type Float32 = _Float32;
-  /** Float64 */
-  export type Float64 = _Float64;
-  /** Date dtype */
-  export type Date = _Date;
-  /** Datetime */
-  export type Datetime = _Datetime;
-  /** Utf8 */
-  export type Utf8 = _Utf8;
-  /** Utf8 */
-  export type String = _String;
-  /** Categorical */
-  export type Categorical = _Categorical;
-  /** List */
-  export type List = _List;
-  /** Struct */
-  export type Struct = _Struct;
-
+  export type Categorical = import(".").Categorical;
+  export type Int8 = import(".").Int8;
+  export type Int16 = import(".").Int16;
+  export type Int32 = import(".").Int32;
+  export type Int64 = import(".").Int64;
+  export type UInt8 = import(".").UInt8;
+  export type UInt16 = import(".").UInt16;
+  export type UInt32 = import(".").UInt32;
+  export type UInt64 = import(".").UInt64;
+  export type Float32 = import(".").Float32;
+  export type Float64 = import(".").Float64;
+  export type Bool = import(".").Bool;
+  export type Utf8 = import(".").Utf8;
+  export type String = import(".").String;
+  export type List = import(".").List;
+  export type FixedSizeList = import(".").FixedSizeList;
+  export type Date = import(".").Date;
+  export type Datetime = import(".").Datetime;
+  export type Time = import(".").Time;
+  export type Duration = import(".").Duration;
+  export type Object = import(".").Object_;
+  export type Null = import(".").Null;
+  export type Struct = import(".").Struct;
+  export type Decimal = import(".").Decimal;
   /**
    * deserializes a datatype from the serde output of rust polars `DataType`
    * @param dtype dtype object
    */
   export function deserialize(dtype: any): DataType {
     if (typeof dtype === "string") {
-      return DataType[dtype];
+      const member = (DataType as any)[dtype];
+      // if it's a factory function, call it with no args (use defaults),
+      // otherwise return the already-instantiated value
+      return typeof member === "function" ? member() : member;
     }
 
     let { variant, inner } = dtype;
@@ -333,6 +487,108 @@ export namespace DataType {
       inner = [deserialize(inner[0])];
     }
 
+    if (variant === "FixedSizeList") {
+      inner = [deserialize(inner[0]), inner[1]];
+    }
+
     return DataType[variant](...inner);
   }
 }
+
+export type DataTypeName =
+  | "Null"
+  | "Bool"
+  | "Int8"
+  | "Int16"
+  | "Int32"
+  | "Int64"
+  | "UInt8"
+  | "UInt16"
+  | "UInt32"
+  | "UInt64"
+  | "Float32"
+  | "Float64"
+  | "Decimal"
+  | "Date"
+  | "Datetime"
+  | "Time"
+  | "Duration"
+  | "Object"
+  | "Utf8"
+  | "String"
+  | "Categorical"
+  | "List"
+  | "FixedSizeList"
+  | "Struct";
+
+export type JsType = number | boolean | string;
+export type DTypeToJs<T> = T extends DataType.Decimal
+  ? bigint
+  : T extends DataType.Float64
+    ? number
+    : T extends DataType.Float32
+      ? number
+      : T extends DataType.Int64
+        ? bigint
+        : T extends DataType.Int32
+          ? number
+          : T extends DataType.Int16
+            ? number
+            : T extends DataType.Int8
+              ? number
+              : T extends DataType.Bool
+                ? boolean
+                : T extends DataType.Utf8
+                  ? string
+                  : T extends DataType.String
+                    ? string
+                    : never;
+// some objects can be constructed with a looser JS type than they’d return when converted back to JS
+export type DTypeToJsLoose<T> = T extends DataType.Decimal
+  ? number | bigint
+  : T extends DataType.Float64
+    ? number | bigint
+    : T extends DataType.Float32
+      ? number | bigint
+      : T extends DataType.Int64
+        ? number | bigint
+        : T extends DataType.Int32
+          ? number | bigint
+          : T extends DataType.Int16
+            ? number | bigint
+            : T extends DataType.Int8
+              ? number | bigint
+              : T extends DataType.Bool
+                ? boolean
+                : T extends DataType.Utf8
+                  ? string
+                  : T extends DataType.String
+                    ? string
+                    : never;
+export type DtypeToJsName<T> = T extends DataType.Decimal
+  ? "Decimal"
+  : T extends DataType.Float64
+    ? "Float64"
+    : T extends DataType.Float32
+      ? "Float32"
+      : T extends DataType.Int64
+        ? "Int64"
+        : T extends DataType.Int32
+          ? "Int32"
+          : T extends DataType.Int16
+            ? "Int16"
+            : T extends DataType.Int8
+              ? "Int8"
+              : T extends DataType.UInt64
+                ? "UInt64"
+                : T extends DataType.UInt32
+                  ? "UInt32"
+                  : T extends DataType.UInt16
+                    ? "UInt16"
+                    : T extends DataType.UInt8
+                      ? "UInt8"
+                      : T extends DataType.Bool
+                        ? "Bool"
+                        : T extends DataType.Utf8
+                          ? "Utf8"
+                          : never;

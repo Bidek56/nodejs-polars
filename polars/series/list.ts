@@ -1,11 +1,13 @@
-import { type Series, _Series } from ".";
-import { exprToLitOrExpr } from "..";
 import { col } from "../lazy/functions";
 import type { ListFunctions } from "../shared_traits";
+import { _Series, type Series } from ".";
 
-export type ListNamespace = ListFunctions<Series>;
+/**
+ * List functions for Series
+ */
+export interface SeriesListFunctions extends ListFunctions<Series> {}
 
-export const SeriesListFunctions = (_s): ListFunctions<Series> => {
+export const SeriesListFunctions = (_s): SeriesListFunctions => {
   const wrap = (method, ...args) => {
     const s = _Series(_s);
 
@@ -38,8 +40,8 @@ export const SeriesListFunctions = (_s): ListFunctions<Series> => {
     get(index: number) {
       return wrap("get", index);
     },
-    eval(expr, parallel) {
-      return wrap("eval", expr, parallel);
+    eval(expr) {
+      return wrap("eval", expr);
     },
     first() {
       return wrap("get", 0);
@@ -77,10 +79,10 @@ export const SeriesListFunctions = (_s): ListFunctions<Series> => {
     slice(offset, length) {
       return wrap("slice", offset, length);
     },
-    sort(reverse: any = false) {
-      return typeof reverse === "boolean"
-        ? wrap("sort", reverse)
-        : wrap("sort", reverse.reverse);
+    sort(descending: any = false) {
+      return typeof descending === "boolean"
+        ? wrap("sort", descending)
+        : wrap("sort", descending.descending ?? false);
     },
     sum() {
       return wrap("sum");

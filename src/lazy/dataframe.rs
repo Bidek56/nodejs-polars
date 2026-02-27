@@ -1,12 +1,13 @@
-use super::dsl::*;
 use crate::dataframe::JsDataFrame;
+use crate::lazy::dsl::{JsExpr, ToExprs};
 use crate::prelude::*;
-use polars::prelude::{col, lit, ClosedWindow, JoinType};
-use polars_io::cloud::CloudOptions;
-use polars_io::RowIndex;
+use polars::prelude::sync_on_close::SyncOnCloseType;
+use polars::prelude::{lit, ClosedWindow, JoinType};
+use polars_io::{HiveOptions, RowIndex};
+use polars_utils::slice_enum::Slice;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::ops::BitOrAssign;
 
 #[napi]
 #[repr(transparent)]
@@ -46,20 +47,26 @@ impl JsLazyGroupBy {
     }
 }
 
+fn bin_config() -> bincode::config::Configuration {
+    bincode::config::standard()
+        .with_no_limit()
+        .with_variable_int_encoding()
+}
+
 #[napi]
 impl JsLazyFrame {
     #[napi(catch_unwind)]
-    pub fn to_js(&self, env: Env) -> napi::Result<napi::JsUnknown> {
+    pub fn to_js(&self, env: Env) -> napi::Result<napi::Unknown<'_>> {
         env.to_js_value(&self.ldf.logical_plan)
     }
 
     #[napi(catch_unwind)]
     pub fn serialize(&self, format: String) -> napi::Result<Buffer> {
         let buf = match format.as_ref() {
-            "bincode" => bincode::serialize(&self.ldf.logical_plan)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+            "bincode" => bincode::serde::encode_to_vec(&self.ldf.logical_plan, bin_config())
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             "json" => serde_json::to_vec(&self.ldf.logical_plan)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             _ => {
                 return Err(napi::Error::from_reason(
                     "unexpected format. \n supported options are 'json', 'bincode'".to_owned(),
@@ -71,11 +78,15 @@ impl JsLazyFrame {
 
     #[napi(factory, catch_unwind)]
     pub fn deserialize(buf: Buffer, format: String) -> napi::Result<JsLazyFrame> {
-        let lp: LogicalPlan = match format.as_ref() {
-            "bincode" => bincode::deserialize(&buf)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+        let lp: DslPlan = match format.as_ref() {
+            "bincode" => {
+                bincode::serde::decode_from_slice(&buf, bin_config())
+                    .map_err(|err| napi::Error::from_reason(err.to_string()))
+                    .unwrap()
+                    .0
+            }
             "json" => serde_json::from_slice(&buf)
-                .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))?,
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?,
             _ => {
                 return Err(napi::Error::from_reason(
                     "unexpected format. \n supported options are 'json', 'bincode'".to_owned(),
@@ -89,8 +100,9 @@ impl JsLazyFrame {
         Ok(lf.clone())
     }
     #[napi(catch_unwind)]
-    pub fn describe_plan(&self) -> String {
-        self.ldf.describe_plan()
+    pub fn describe_plan(&self) -> napi::Result<String> {
+        let result = self.ldf.describe_plan().map_err(JsPolarsErr::from)?;
+        Ok(result)
     }
     #[napi(catch_unwind)]
     pub fn describe_optimized_plan(&self) -> napi::Result<String> {
@@ -112,14 +124,19 @@ impl JsLazyFrame {
         predicate_pushdown: Option<bool>,
         projection_pushdown: Option<bool>,
         simplify_expr: Option<bool>,
-        _string_cache: Option<bool>,
         slice_pushdown: Option<bool>,
+        comm_subplan_elim: Option<bool>,
+        comm_subexpr_elim: Option<bool>,
+        streaming: Option<bool>,
     ) -> JsLazyFrame {
         let type_coercion = type_coercion.unwrap_or(true);
         let predicate_pushdown = predicate_pushdown.unwrap_or(true);
         let projection_pushdown = projection_pushdown.unwrap_or(true);
         let simplify_expr = simplify_expr.unwrap_or(true);
         let slice_pushdown = slice_pushdown.unwrap_or(true);
+        let comm_subplan_elim = comm_subplan_elim.unwrap_or(true);
+        let comm_subexpr_elim = comm_subexpr_elim.unwrap_or(true);
+        let streaming = streaming.unwrap_or(false);
 
         let ldf = self.ldf.clone();
         let ldf = ldf
@@ -127,27 +144,28 @@ impl JsLazyFrame {
             .with_predicate_pushdown(predicate_pushdown)
             .with_simplify_expr(simplify_expr)
             .with_slice_pushdown(slice_pushdown)
-            .with_projection_pushdown(projection_pushdown);
+            .with_new_streaming(streaming)
+            .with_projection_pushdown(projection_pushdown)
+            .with_comm_subplan_elim(comm_subplan_elim)
+            .with_comm_subexpr_elim(comm_subexpr_elim);
+
         ldf.into()
     }
     #[napi(catch_unwind)]
     pub fn sort(
         &self,
         by_column: String,
-        reverse: bool,
+        descending: bool,
         nulls_last: bool,
-        multithreaded: bool,
         maintain_order: bool,
     ) -> JsLazyFrame {
         let ldf = self.ldf.clone();
         ldf.sort(
-            &by_column,
-            SortOptions {
-                descending: reverse,
-                nulls_last,
-                multithreaded,
-                maintain_order,
-            },
+            [&by_column],
+            SortMultipleOptions::default()
+                .with_order_descending(descending)
+                .with_nulls_last(nulls_last)
+                .with_maintain_order(maintain_order),
         )
         .into()
     }
@@ -155,13 +173,19 @@ impl JsLazyFrame {
     pub fn sort_by_exprs(
         &self,
         by_column: Vec<&JsExpr>,
-        reverse: Vec<bool>,
+        descending: bool,
         nulls_last: bool,
         maintain_order: bool,
     ) -> JsLazyFrame {
         let ldf = self.ldf.clone();
-        ldf.sort_by_exprs(by_column.to_exprs(), reverse, nulls_last, maintain_order)
-            .into()
+        ldf.sort_by_exprs(
+            by_column.to_exprs(),
+            SortMultipleOptions::default()
+                .with_order_descending(descending)
+                .with_nulls_last(nulls_last)
+                .with_maintain_order(maintain_order),
+        )
+        .into()
     }
     #[napi(catch_unwind)]
     pub fn cache(&self) -> JsLazyFrame {
@@ -169,9 +193,12 @@ impl JsLazyFrame {
         ldf.cache().into()
     }
     #[napi(catch_unwind)]
-    pub fn collect_sync(&self) -> napi::Result<JsDataFrame> {
-        let ldf = self.ldf.clone();
-        let df = ldf.collect().map_err(JsPolarsErr::from)?;
+    pub fn collect_sync(&self, engine: Wrap<Engine>) -> napi::Result<JsDataFrame> {
+        let df = self
+            .ldf
+            .clone()
+            .collect_with_engine(engine.0)
+            .map_err(JsPolarsErr::from)?;
         Ok(df.into())
     }
 
@@ -182,15 +209,15 @@ impl JsLazyFrame {
     }
 
     #[napi(ts_return_type = "Promise<JsDataFrame>", catch_unwind)]
-    pub fn fetch(&self, n_rows: i64) -> AsyncTask<AsyncFetch> {
+    pub fn fetch(&self, n_rows: u32) -> AsyncTask<AsyncFetch> {
         let ldf = self.ldf.clone();
-        AsyncTask::new(AsyncFetch((ldf, n_rows as usize)))
+        AsyncTask::new(AsyncFetch((ldf, n_rows)))
     }
 
     #[napi(catch_unwind)]
-    pub fn fetch_sync(&self, n_rows: i64) -> napi::Result<JsDataFrame> {
+    pub fn fetch_sync(&self, n_rows: u32) -> napi::Result<JsDataFrame> {
         let ldf = self.ldf.clone();
-        let df = ldf.fetch(n_rows as usize).map_err(JsPolarsErr::from)?;
+        let df = ldf.limit(n_rows).collect().map_err(JsPolarsErr::from)?;
         Ok(df.into())
     }
 
@@ -224,12 +251,11 @@ impl JsLazyFrame {
         offset: String,
         closed: Wrap<ClosedWindow>,
         by: Vec<&JsExpr>,
-        check_sorted: bool,
     ) -> JsLazyGroupBy {
         let closed_window = closed.0;
         let ldf = self.ldf.clone();
         let by = by.to_exprs();
-        let lazy_gb = ldf.group_by_rolling(
+        let lazy_gb = ldf.rolling(
             index_column.inner.clone(),
             by,
             RollingGroupOptions {
@@ -237,14 +263,12 @@ impl JsLazyFrame {
                 period: Duration::parse(&period),
                 offset: Duration::parse(&offset),
                 closed_window,
-                check_sorted,
             },
         );
 
         JsLazyGroupBy { lgb: Some(lazy_gb) }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[napi(catch_unwind)]
     pub fn groupby_dynamic(
         &mut self,
@@ -252,32 +276,31 @@ impl JsLazyFrame {
         every: String,
         period: String,
         offset: String,
+        label: Wrap<Label>,
         include_boundaries: bool,
         closed: Wrap<ClosedWindow>,
         by: Vec<&JsExpr>,
         start_by: Wrap<StartBy>,
-        check_sorted: bool,
-    ) -> JsLazyGroupBy {
+    ) -> Result<JsLazyGroupBy> {
         let closed_window = closed.0;
         let by = by.to_exprs();
         let ldf = self.ldf.clone();
-        let lazy_gb = ldf.group_by_dynamic(
+        let lazy_gb: LazyGroupBy = ldf.group_by_dynamic(
             index_column.inner.clone(),
             by,
             DynamicGroupOptions {
-                every: Duration::parse(&every),
-                period: Duration::parse(&period),
-                offset: Duration::parse(&offset),
-                label: Label::DataPoint,
+                every: Duration::try_parse(&every).map_err(JsPolarsErr::from)?,
+                period: Duration::try_parse(&period).map_err(JsPolarsErr::from)?,
+                offset: Duration::try_parse(&offset).map_err(JsPolarsErr::from)?,
+                label: label.0,
                 include_boundaries,
                 closed_window,
                 start_by: start_by.0,
-                check_sorted,
                 ..Default::default()
             },
         );
 
-        JsLazyGroupBy { lgb: Some(lazy_gb) }
+        Ok(JsLazyGroupBy { lgb: Some(lazy_gb) })
     }
     #[allow(clippy::too_many_arguments)]
     #[napi(catch_unwind)]
@@ -286,19 +309,21 @@ impl JsLazyFrame {
         other: &JsLazyFrame,
         left_on: &JsExpr,
         right_on: &JsExpr,
-        left_by: Option<Vec<&str>>,
-        right_by: Option<Vec<&str>>,
+        left_by: Option<Vec<String>>,
+        right_by: Option<Vec<String>>,
         allow_parallel: bool,
         force_parallel: bool,
         suffix: String,
         strategy: String,
         tolerance: Option<Wrap<AnyValue<'_>>>,
         tolerance_str: Option<String>,
+        check_sortedness: bool,
     ) -> JsLazyFrame {
         let strategy = match strategy.as_ref() {
             "forward" => AsofStrategy::Forward,
             "backward" => AsofStrategy::Backward,
-            _ => panic!("expected one of {{'forward', 'backward'}}"),
+            "nearest" => AsofStrategy::Nearest,
+            _ => panic!("expected one of {{'forward', 'backward', 'nearest'}}"),
         };
         let ldf = self.ldf.clone();
         let other = other.ldf.clone();
@@ -310,13 +335,19 @@ impl JsLazyFrame {
             .right_on([right_on])
             .allow_parallel(allow_parallel)
             .force_parallel(force_parallel)
-            .how(JoinType::AsOf(AsOfOptions {
+            .how(JoinType::AsOf(Box::new(AsOfOptions {
                 strategy,
-                left_by: left_by.map(strings_to_smartstrings),
-                right_by: right_by.map(strings_to_smartstrings),
-                tolerance: tolerance.map(|t| t.0.into_static().unwrap()),
+                left_by: left_by.map(strings_to_pl_smallstr),
+                right_by: right_by.map(strings_to_pl_smallstr),
+                tolerance: tolerance.map(|t| {
+                    let av = t.0.into_static();
+                    let dtype = av.dtype();
+                    Scalar::new(dtype, av)
+                }),
                 tolerance_str: tolerance_str.map(|s| s.into()),
-            }))
+                allow_eq: true,
+                check_sortedness,
+            })))
             .suffix(suffix)
             .finish()
             .into()
@@ -332,11 +363,28 @@ impl JsLazyFrame {
         force_parallel: bool,
         how: Wrap<JoinType>,
         suffix: String,
+        coalesce: Option<bool>,
+        validate: Option<String>,
     ) -> JsLazyFrame {
         let ldf = self.ldf.clone();
         let other = other.ldf.clone();
         let left_on = left_on.to_exprs();
         let right_on = right_on.to_exprs();
+
+        let coalesce = match (&how.0, coalesce) {
+            (JoinType::Full, None) => JoinCoalesce::KeepColumns,
+            (_, Some(false)) => JoinCoalesce::KeepColumns,
+            _ => JoinCoalesce::CoalesceColumns, // Default is true
+        };
+
+        let validation: JoinValidation = match validate.as_deref() {
+            Some("m:m") => JoinValidation::ManyToMany,
+            Some("m:1") => JoinValidation::ManyToOne,
+            Some("1:m") => JoinValidation::OneToMany,
+            Some("1:1") => JoinValidation::OneToOne,
+            None => JoinValidation::ManyToMany,
+            _ => panic!("Unknown join validation method"),
+        };
 
         ldf.join_builder()
             .with(other)
@@ -346,6 +394,8 @@ impl JsLazyFrame {
             .force_parallel(force_parallel)
             .how(how.0)
             .suffix(suffix)
+            .coalesce(coalesce)
+            .validate(validation)
             .finish()
             .into()
     }
@@ -362,7 +412,7 @@ impl JsLazyFrame {
     #[napi(catch_unwind)]
     pub fn rename(&mut self, existing: Vec<String>, new_names: Vec<String>) -> JsLazyFrame {
         let ldf = self.ldf.clone();
-        ldf.rename(existing, new_names).into()
+        ldf.rename(existing, new_names, true).into()
     }
     #[napi(catch_unwind)]
     pub fn reverse(&self) -> JsLazyFrame {
@@ -395,28 +445,28 @@ impl JsLazyFrame {
     #[napi(catch_unwind)]
     pub fn min(&self) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf.min().map_err(JsPolarsErr::from)?;
+        let out = ldf.min();
         Ok(out.into())
     }
 
     #[napi(catch_unwind)]
     pub fn max(&self) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf.max().map_err(JsPolarsErr::from)?;
+        let out = ldf.max();
         Ok(out.into())
     }
 
     #[napi(catch_unwind)]
     pub fn sum(&self) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf.sum().map_err(JsPolarsErr::from)?;
+        let out = ldf.sum();
         Ok(out.into())
     }
 
     #[napi(catch_unwind)]
     pub fn mean(&self) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf.mean().map_err(JsPolarsErr::from)?;
+        let out = ldf.mean();
         Ok(out.into())
     }
 
@@ -424,7 +474,7 @@ impl JsLazyFrame {
     pub fn std(&self, ddof: Option<u8>) -> napi::Result<JsLazyFrame> {
         let ddof = ddof.unwrap_or(1);
         let ldf = self.ldf.clone();
-        let out = ldf.std(ddof).map_err(JsPolarsErr::from)?;
+        let out = ldf.std(ddof);
         Ok(out.into())
     }
 
@@ -432,14 +482,14 @@ impl JsLazyFrame {
     pub fn var(&self, ddof: Option<u8>) -> napi::Result<JsLazyFrame> {
         let ddof = ddof.unwrap_or(1);
         let ldf = self.ldf.clone();
-        let out = ldf.var(ddof).map_err(JsPolarsErr::from)?;
+        let out = ldf.var(ddof);
         Ok(out.into())
     }
 
     #[napi(catch_unwind)]
     pub fn median(&self) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf.median().map_err(JsPolarsErr::from)?;
+        let out = ldf.median();
         Ok(out.into())
     }
 
@@ -447,45 +497,49 @@ impl JsLazyFrame {
     pub fn quantile(
         &self,
         quantile: f64,
-        interpolation: Wrap<QuantileInterpolOptions>,
+        interpolation: Wrap<QuantileMethod>,
     ) -> napi::Result<JsLazyFrame> {
         let ldf = self.ldf.clone();
-        let out = ldf
-            .quantile(lit(quantile), interpolation.0)
-            .map_err(JsPolarsErr::from)?;
+        let out = ldf.quantile(lit(quantile), interpolation.0);
         Ok(out.into())
     }
 
     #[napi(catch_unwind)]
     pub fn explode(&self, column: Vec<&JsExpr>) -> JsLazyFrame {
-        let ldf = self.ldf.clone();
-
-        ldf.explode(column.to_exprs()).into()
+        let mut column_selector: Selector = Selector::Empty;
+        column.to_exprs().into_iter().for_each(|expr| {
+            column_selector.bitor_assign(expr.into_selector().unwrap().into());
+        });
+        let options = ExplodeOptions {
+            empty_as_null: true,
+            keep_nulls: true,
+        };
+        self.ldf.clone().explode(column_selector, options).into()
     }
     #[napi(catch_unwind)]
     pub fn unique(
         &self,
-        maintain_order: bool,
         subset: Option<Vec<String>>,
         keep: Wrap<UniqueKeepStrategy>,
+        maintain_order: bool,
     ) -> JsLazyFrame {
         let ldf = self.ldf.clone();
         match maintain_order {
-            true => ldf.unique_stable(subset, keep.0),
-            false => ldf.unique(subset, keep.0),
+            true => ldf.unique_stable(subset.map(|x| strings_to_selector(x)), keep.0),
+            false => ldf.unique(subset.map(|x| strings_to_selector(x)), keep.0),
         }
         .into()
     }
     #[napi(catch_unwind)]
     pub fn drop_nulls(&self, subset: Option<Vec<String>>) -> JsLazyFrame {
         let ldf = self.ldf.clone();
-        ldf.drop_nulls(subset.map(|v| v.into_iter().map(|s| col(&s)).collect()))
+        ldf.drop_nulls(subset.map(|v| strings_to_selector(v)))
             .into()
     }
     #[napi(catch_unwind)]
-    pub fn slice(&self, offset: i64, len: u32) -> JsLazyFrame {
+    pub fn slice(&self, offset: i64, length: u32) -> JsLazyFrame {
         let ldf = self.ldf.clone();
-        ldf.slice(offset, len).into()
+        ldf.slice(offset, length).into()
     }
     #[napi(catch_unwind)]
     pub fn tail(&self, n: u32) -> JsLazyFrame {
@@ -493,25 +547,24 @@ impl JsLazyFrame {
         ldf.tail(n).into()
     }
     #[napi(catch_unwind)]
-    pub fn melt(
+    pub fn unpivot(
         &self,
-        id_vars: Vec<&str>,
-        value_vars: Vec<&str>,
-        value_name: Option<&str>,
-        variable_name: Option<&str>,
-        streamable: Option<bool>,
+        id_vars: Vec<String>,
+        value_vars: Vec<String>,
+        variable_name: Option<String>,
+        value_name: Option<String>,
     ) -> JsLazyFrame {
-        let args = MeltArgs {
-            id_vars: strings_to_smartstrings(id_vars),
-            value_vars: strings_to_smartstrings(value_vars),
-            value_name: value_name.map(|s| s.into()),
+        let args = UnpivotArgsDSL {
+            on: Some(strings_to_selector(value_vars)),
+            index: strings_to_selector(id_vars),
             variable_name: variable_name.map(|s| s.into()),
-            streamable: streamable.unwrap_or(false),
+            value_name: value_name.map(|s| s.into()),
         };
         let ldf = self.ldf.clone();
-        ldf.melt(args).into()
+        ldf.unpivot(args).into()
     }
 
+    // deprecated
     #[napi(catch_unwind)]
     pub fn with_row_count(&self, name: String, offset: Option<u32>) -> JsLazyFrame {
         let ldf = self.ldf.clone();
@@ -519,9 +572,15 @@ impl JsLazyFrame {
     }
 
     #[napi(catch_unwind)]
+    pub fn with_row_index(&self, name: String, offset: Option<u32>) -> JsLazyFrame {
+        let ldf = self.ldf.clone();
+        ldf.with_row_index(&name, offset).into()
+    }
+
+    #[napi(catch_unwind)]
     pub fn drop_columns(&self, colss: Vec<String>) -> JsLazyFrame {
         let ldf = self.ldf.clone();
-        ldf.drop(colss).into()
+        ldf.drop(strings_to_selector(colss)).into()
     }
     #[napi(js_name = "clone", catch_unwind)]
     pub fn clone(&self) -> JsLazyFrame {
@@ -529,10 +588,10 @@ impl JsLazyFrame {
     }
 
     #[napi(getter, js_name = "columns", catch_unwind)]
-    pub fn columns(&self) -> napi::Result<Vec<String>> {
+    pub fn columns(&mut self) -> napi::Result<Vec<String>> {
         Ok(self
             .ldf
-            .schema()
+            .collect_schema()
             .map_err(JsPolarsErr::from)?
             .iter_names()
             .map(|s| s.as_str().into())
@@ -541,78 +600,151 @@ impl JsLazyFrame {
 
     #[napi(catch_unwind)]
     pub fn unnest(&self, colss: Vec<String>) -> JsLazyFrame {
-        self.ldf.clone().unnest(colss).into()
+        self.ldf
+            .clone()
+            .unnest(strings_to_selector(colss), Some(PlSmallStr::EMPTY))
+            .into()
     }
 
     #[napi(catch_unwind)]
-    pub fn sink_csv(&self, path: String, options: SinkCsvOptions) -> napi::Result<()> {
-        let quote_style = QuoteStyle::default();
-        let null_value = options
-            .null_value
-            .unwrap_or(SerializeOptions::default().null);
-        let float_precision: Option<usize> = options.float_precision.map(|fp| fp as usize);
-        let separator = options.separator.unwrap_or(",".to_owned()).as_bytes()[0];
-        let line_terminator = options.line_terminator.unwrap_or("\n".to_string());
-        let quote_char = options.quote_char.unwrap_or("\"".to_owned()).as_bytes()[0];
-        let date_format = options.date_format;
-        let time_format = options.time_format;
-        let datetime_format = options.datetime_format;
+    pub fn sink_csv(
+        &self,
+        path: String,
+        options: Wrap<CsvWriterOptions>,
+        cloud_options: Option<HashMap<String, Wrap<AnyValue>>>,
+    ) -> napi::Result<JsLazyFrame> {
+        let cloud_options = parse_cloud_options(&path, cloud_options);
 
-        let serialize_options = SerializeOptions {
-            date_format,
-            time_format,
-            datetime_format,
-            float_precision,
-            separator,
-            quote_char,
-            null: null_value,
-            line_terminator,
-            quote_style,
+        let unified_sink_args = UnifiedSinkArgs {
+            mkdir: true,
+            maintain_order: true,
+            sync_on_close: SyncOnCloseType::default(),
+            cloud_options: cloud_options.map(Arc::new),
         };
 
-        let batch_size = options.batch_size.map(|bs| bs).unwrap_or(1024) as usize;
-        let batch_size = NonZeroUsize::new(batch_size).unwrap();
-        let include_bom = options.include_bom.unwrap_or(false);
-        let include_header = options.include_header.unwrap_or(true);
-        let maintain_order = options.maintain_order;
-
-        let options = CsvWriterOptions {
-            include_bom,
-            include_header,
-            maintain_order,
-            batch_size,
-            serialize_options,
+        let target = SinkDestination::File {
+            target: SinkTarget::Path(PlRefPath::new(&path)),
         };
 
-        let path_buf: PathBuf = PathBuf::from(path);
         let ldf = self.ldf.clone().with_comm_subplan_elim(false);
-        let _ = ldf.sink_csv(path_buf, options).map_err(JsPolarsErr::from);
-        Ok(())
+        let rldf = ldf
+            .sink(target, FileWriteFormat::Csv(options.0), unified_sink_args)
+            .map_err(JsPolarsErr::from)?;
+        Ok(rldf.into())
     }
 
     #[napi(catch_unwind)]
-    pub fn sink_parquet(&self, path: String, options: SinkParquetOptions) -> napi::Result<()> {
+    pub fn sink_parquet(
+        &self,
+        path: String,
+        options: SinkParquetOptions,
+    ) -> napi::Result<JsLazyFrame> {
         let compression_str = options.compression.unwrap_or("zstd".to_string());
         let compression = parse_parquet_compression(compression_str, options.compression_level)?;
-        let statistics = options.statistics.unwrap_or(false);
+        let statistics = if options.statistics.expect("Expect statistics") {
+            StatisticsOptions::full()
+        } else {
+            StatisticsOptions::empty()
+        };
         let row_group_size = options.row_group_size.map(|i| i as usize);
-        let data_pagesize_limit = options.data_pagesize_limit.map(|i| i as usize);
-        let maintain_order = options.maintain_order.unwrap_or(true);
+        let data_page_size = options.data_pagesize_limit.map(|i| i as usize);
+        let cloud_options = parse_cloud_options(&path, options.cloud_options);
 
         let options = ParquetWriteOptions {
             compression,
             statistics,
             row_group_size,
-            data_pagesize_limit,
-            maintain_order,
+            data_page_size,
+            ..Default::default()
         };
 
-        let path_buf: PathBuf = PathBuf::from(path);
+        let target = SinkDestination::File {
+            target: SinkTarget::Path(PlRefPath::new(&path)),
+        };
+
+        let unified_sink_args = UnifiedSinkArgs {
+            mkdir: true,
+            maintain_order: true,
+            sync_on_close: SyncOnCloseType::default(),
+            cloud_options: cloud_options.map(Arc::new),
+        };
+
         let ldf = self.ldf.clone().with_comm_subplan_elim(false);
-        let _ = ldf
-            .sink_parquet(path_buf, options)
-            .map_err(JsPolarsErr::from);
-        Ok(())
+        let rldf = ldf
+            .sink(
+                target,
+                FileWriteFormat::Parquet(Arc::new(options)),
+                unified_sink_args,
+            )
+            .map_err(JsPolarsErr::from)?;
+        Ok(rldf.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub fn sink_json(&self, path: String, options: SinkJsonOptions) -> napi::Result<JsLazyFrame> {
+        let cloud_options = parse_cloud_options(&path, options.cloud_options);
+        let target = SinkDestination::File {
+            target: SinkTarget::Path(PlRefPath::new(&path)),
+        };
+
+        let unified_sink_args = UnifiedSinkArgs {
+            mkdir: options.mkdir.unwrap_or(true),
+            maintain_order: options.maintain_order.unwrap_or(true),
+            sync_on_close: options.sync_on_close.0,
+            cloud_options: cloud_options.map(Arc::new),
+        };
+
+        let nd_options = NDJsonWriterOptions {
+            ..Default::default()
+        };
+
+        let rldf = self
+            .ldf
+            .clone()
+            .sink(
+                target,
+                FileWriteFormat::NDJson(nd_options),
+                unified_sink_args,
+            )
+            .map_err(JsPolarsErr::from)?;
+        Ok(rldf.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub fn sink_ipc(&self, path: String, options: SinkIpcOptions) -> napi::Result<JsLazyFrame> {
+        let cloud_options = parse_cloud_options(&path, options.cloud_options);
+        let compat_level: CompatLevel = match options.compat_level.unwrap().as_str() {
+            "newest" => CompatLevel::newest(),
+            "oldest" => CompatLevel::oldest(),
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "use one of {'newest', 'oldest'}".to_owned(),
+                ))
+            }
+        };
+
+        let ipc_options = IpcWriterOptions {
+            compression: options.compression.0,
+            compat_level: compat_level,
+            ..Default::default()
+        };
+
+        let target = SinkDestination::File {
+            target: SinkTarget::Path(PlRefPath::new(&path)),
+        };
+        let unified_sink_args = UnifiedSinkArgs {
+            mkdir: options.mkdir.unwrap_or(true),
+            maintain_order: options.maintain_order.unwrap_or(true),
+            sync_on_close: options.sync_on_close.0,
+            cloud_options: cloud_options.map(Arc::new),
+        };
+
+        let rldf = self
+            .ldf
+            .clone()
+            .sink(target, FileWriteFormat::Ipc(ipc_options), unified_sink_args)
+            .map_err(JsPolarsErr::from)?;
+        Ok(rldf.into())
     }
 }
 
@@ -632,7 +764,7 @@ pub struct ScanCsvOptions {
     pub encoding: String,
     pub low_memory: Option<bool>,
     pub comment_prefix: Option<String>,
-    pub eol_char: Option<u8>,
+    pub eol_char: String,
     pub quote_char: Option<String>,
     pub parse_dates: Option<bool>,
     pub skip_rows_after_header: u32,
@@ -648,22 +780,20 @@ pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFra
     let n_rows = options.n_rows.map(|i| i as usize);
     let row_count = options.row_count.map(RowIndex::from);
     let missing_utf8_is_empty_string: bool = options.missing_utf8_is_empty_string.unwrap_or(false);
-    let quote_char = if let Some(s) = options.quote_char {
-        if s.is_empty() {
+    let quote_char = options.quote_char.map_or(None, |q| {
+        if q.is_empty() {
             None
         } else {
-            Some(s.as_bytes()[0])
+            Some(q.as_bytes()[0])
         }
-    } else {
-        None
-    };
+    });
 
     let overwrite_dtype = options.overwrite_dtype.map(|overwrite_dtype| {
         overwrite_dtype
             .iter()
             .map(|(name, dtype)| {
                 let dtype = dtype.0.clone();
-                Field::new(name, dtype)
+                Field::new(name.into(), dtype)
             })
             .collect::<Schema>()
     });
@@ -674,20 +804,24 @@ pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFra
         e => return Err(JsPolarsErr::Other(format!("encoding not {} not implemented.", e)).into()),
     };
 
-    let r = LazyCsvReader::new(path)
+    let r = LazyCsvReader::new(PlRefPath::new(&path))
         .with_infer_schema_length(Some(options.infer_schema_length.unwrap_or(100) as usize))
         .with_separator(options.sep.unwrap_or(",".to_owned()).as_bytes()[0])
-        .has_header(options.has_header.unwrap_or(true))
+        .with_has_header(options.has_header.unwrap_or(true))
         .with_ignore_errors(options.ignore_errors)
         .with_skip_rows(options.skip_rows.unwrap_or(0) as usize)
         .with_n_rows(n_rows)
         .with_cache(options.cache.unwrap_or(true))
-        .with_dtype_overwrite(overwrite_dtype.as_ref())
+        .with_dtype_overwrite(overwrite_dtype.map(Arc::new))
         .with_schema(options.schema.map(|schema| Arc::new(schema.0)))
-        .low_memory(options.low_memory.unwrap_or(false))
-        .with_comment_prefix(options.comment_prefix.as_deref())
+        .with_low_memory(options.low_memory.unwrap_or(false))
+        .with_comment_prefix(
+            options
+                .comment_prefix
+                .map_or(None, |s| Some(PlSmallStr::from_string(s))),
+        )
         .with_quote_char(quote_char)
-        .with_end_of_line_char(options.eol_char.unwrap_or(b'\n'))
+        .with_eol_char(options.eol_char.as_bytes()[0])
         .with_rechunk(options.rechunk.unwrap_or(false))
         .with_skip_rows_after_header(options.skip_rows_after_header as usize)
         .with_encoding(encoding)
@@ -695,68 +829,62 @@ pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFra
         .with_try_parse_dates(options.parse_dates.unwrap_or(false))
         .with_null_values(options.null_values.map(|s| s.0))
         .with_missing_is_null(!missing_utf8_is_empty_string)
-        .truncate_ragged_lines(options.truncate_ragged_lines.unwrap_or(false))
-        .raise_if_empty(options.raise_if_empty.unwrap_or(true))
+        .with_truncate_ragged_lines(options.truncate_ragged_lines.unwrap_or(false))
+        .with_raise_if_empty(options.raise_if_empty.unwrap_or(true))
         .finish()
         .map_err(JsPolarsErr::from)?;
     Ok(r.into())
-}
-
-#[napi(object)]
-pub struct ScanParquetOptions {
-    pub n_rows: Option<i64>,
-    pub cache: Option<bool>,
-    pub parallel: Wrap<ParallelStrategy>,
-    pub row_count: Option<JsRowCount>,
-    pub rechunk: Option<bool>,
-    pub low_memory: Option<bool>,
-    pub use_statistics: Option<bool>,
-    pub hive_partitioning: Option<bool>,
-    pub cloud_options: Option<HashMap::<String, String>>,
-    pub retries: Option<i64>,
 }
 
 #[napi(catch_unwind)]
 pub fn scan_parquet(path: String, options: ScanParquetOptions) -> napi::Result<JsLazyFrame> {
     let n_rows = options.n_rows.map(|i| i as usize);
     let cache = options.cache.unwrap_or(true);
+    let glob = options.glob.unwrap_or(true);
     let parallel = options.parallel;
-    let row_index: Option<RowIndex> = options.row_count.map(|rc| rc.into());
-    let rechunk = options.rechunk.unwrap_or(false);
-    let low_memory = options.low_memory.unwrap_or(false);
-    let use_statistics = options.use_statistics.unwrap_or(false);
-    
-    let mut cloud_options: Option<CloudOptions> = if let Some(o) = options.cloud_options {
-        let co: Vec<(String, String)> = o.into_iter().map(|kv: (String, String)| kv).collect();
-        Some(CloudOptions::from_untyped_config(&path, co).map_err(JsPolarsErr::from)?)
+
+    let row_index: Option<RowIndex> = if let Some(idn) = options.row_index_name {
+        Some(RowIndex {
+            name: idn.into(),
+            offset: options.row_index_offset.unwrap_or(0),
+        })
     } else {
         None
     };
-    
-    let retries = options.retries.unwrap_or_else(|| 2) as usize;
-    if retries > 0 {
-        cloud_options =
-            cloud_options
-                .or_else(|| Some(CloudOptions::default()))
-                .map(|mut options| {
-                    options.max_retries = retries;
-                    options
-                });
-    }
 
-    let hive_partitioning: bool = options.hive_partitioning.unwrap_or(false);
+    let rechunk = options.rechunk.unwrap_or(false);
+    let low_memory = options.low_memory.unwrap_or(false);
+    let use_statistics = options.use_statistics.unwrap_or(false);
+
+    let cloud_options = parse_cloud_options(&path, options.cloud_options);
+    let hive_schema = options.hive_schema.map(|s| Arc::new(s.0));
+    let schema = options.schema.map(|s| Arc::new(s.0));
+    let hive_options = HiveOptions {
+        enabled: options.hive_partitioning,
+        hive_start_idx: 0,
+        schema: hive_schema,
+        try_parse_dates: options.try_parse_hive_dates.unwrap_or(true),
+    };
+
+    let include_file_paths = options.include_file_paths;
+    let allow_missing_columns = options.allow_missing_columns.unwrap_or(false);
+
     let args = ScanArgsParquet {
         n_rows,
         cache,
         parallel: parallel.0,
         rechunk,
         row_index,
+        schema,
         low_memory,
         cloud_options,
         use_statistics,
-        hive_partitioning,
+        hive_options,
+        glob,
+        include_file_paths: include_file_paths.map(PlSmallStr::from),
+        allow_missing_columns,
     };
-    let lf = LazyFrame::scan_parquet(path, args).map_err(JsPolarsErr::from)?;
+    let lf = LazyFrame::scan_parquet(PlRefPath::new(&path), args).map_err(JsPolarsErr::from)?;
     Ok(lf.into())
 }
 
@@ -766,7 +894,6 @@ pub struct ScanIPCOptions {
     pub cache: Option<bool>,
     pub rechunk: Option<bool>,
     pub row_count: Option<JsRowCount>,
-    pub memmap: Option<bool>,
 }
 
 #[napi(catch_unwind)]
@@ -774,16 +901,23 @@ pub fn scan_ipc(path: String, options: ScanIPCOptions) -> napi::Result<JsLazyFra
     let n_rows = options.n_rows.map(|i| i as usize);
     let cache = options.cache.unwrap_or(true);
     let rechunk = options.rechunk.unwrap_or(false);
-    let memmap = options.memmap.unwrap_or(true);
     let row_index: Option<RowIndex> = options.row_count.map(|rc| rc.into());
-    let args = ScanArgsIpc {
-        n_rows,
-        cache,
-        rechunk,
-        row_index,
-        memmap,
+    let options = IpcScanOptions {
+        ..Default::default()
     };
-    let lf = LazyFrame::scan_ipc(path, args).map_err(JsPolarsErr::from)?;
+    let lf = LazyFrame::scan_ipc(
+        PlRefPath::new(&path),
+        options,
+        UnifiedScanArgs {
+            pre_slice: n_rows.map(|len| Slice::Positive { offset: 0, len }),
+            row_index,
+            rechunk,
+            cache,
+            glob: true,
+            ..Default::default()
+        },
+    )
+    .map_err(JsPolarsErr::from)?;
     Ok(lf.into())
 }
 
@@ -802,17 +936,17 @@ pub struct JsonScanOptions {
 pub fn scan_json(path: String, options: JsonScanOptions) -> napi::Result<JsLazyFrame> {
     let batch_size = options.batch_size as usize;
     let batch_size = NonZeroUsize::new(batch_size);
-    LazyJsonLineReader::new(path)
+    LazyJsonLineReader::new(PlRefPath::new(&path))
         .with_batch_size(batch_size)
         .low_memory(options.low_memory.unwrap_or(false))
         .with_row_index(options.row_count.map(|rc| rc.into()))
         .with_n_rows(options.num_rows.map(|i| i as usize))
         .finish()
-        .map_err(|err| napi::Error::from_reason(format!("{:?}", err)))
+        .map_err(|err| napi::Error::from_reason(err.to_string()))
         .map(|lf| lf.into())
 }
 
-pub struct AsyncFetch((LazyFrame, usize));
+pub struct AsyncFetch((LazyFrame, u32));
 
 impl Task for AsyncFetch {
     type Output = DataFrame;
@@ -821,7 +955,7 @@ impl Task for AsyncFetch {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let (ldf, n_rows) = &self.0;
         let ldf = ldf.clone();
-        let df = ldf.fetch(*n_rows).map_err(JsPolarsErr::from)?;
+        let df = ldf.limit(*n_rows).collect().map_err(JsPolarsErr::from)?;
         Ok(df)
     }
 
