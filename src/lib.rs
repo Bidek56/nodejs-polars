@@ -14,6 +14,7 @@ pub mod cfg;
 pub mod conversion;
 pub mod dataframe;
 pub mod datatypes;
+pub mod delta_utils;
 pub mod error;
 pub mod file;
 pub mod functions;

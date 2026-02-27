@@ -1,6 +1,7 @@
 use crate::dataframe::JsDataFrame;
 use crate::lazy::dsl::{JsExpr, ToExprs};
 use crate::prelude::*;
+use crate::delta_utils::*;
 use polars::prelude::sync_on_close::SyncOnCloseType;
 use polars::prelude::{lit, ClosedWindow, JoinType};
 use polars_io::{HiveOptions, RowIndex};
@@ -8,6 +9,7 @@ use polars_utils::slice_enum::Slice;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::BitOrAssign;
+use delta_kernel::Snapshot;
 
 #[napi]
 #[repr(transparent)]
@@ -978,4 +980,50 @@ impl Task for AsyncCollect {
     fn resolve(&mut self, _env: Env, df: DataFrame) -> napi::Result<Self::JsValue> {
         Ok(df.into())
     }
+}
+
+#[napi(object)]
+pub struct ReadDeltaOptions {
+    pub version: Option<i64>,
+    pub columns: Option<Vec<String>>,
+    pub parallel: Wrap<ParallelStrategy>,
+}
+
+#[napi(catch_unwind)]
+pub fn read_delta(path: String,
+    _options: ReadDeltaOptions
+) -> napi::Result<()> {
+    let url = delta_kernel::try_parse_uri(&path).map_err(|e| napi::Error::from_reason(format!("Failed to parse URI: {}", e)))?;
+
+    let location_args: LocationArgs = LocationArgs {
+        path,
+        region: None,
+        option: Vec::new(),
+        env_creds: false,
+        public: false,
+    };
+
+    let scan_args: ScanArgs = ScanArgs {
+        limit: None,
+        schema_only: false,
+        columns: None,
+        with_row_index: false,
+        with_row_id: false,
+    };
+
+    let engine = get_engine(&url, &location_args).map_err(|e| napi::Error::from_reason(format!("Failed to get engine: {}", e)))?;
+    let snapshot = Snapshot::builder_for(url).build(&engine).map_err(|e| napi::Error::from_reason(format!("Failed to build snapshot: {}", e)))?;
+    let _scan = get_scan(snapshot, &scan_args).map_err(|e| napi::Error::from_reason(format!("Failed to get scan: {}", e)))?;
+    
+    // let table: std::prelude::v1::Result<LazyFrame, deltalake::DeltaTableError> = get_runtime().block_on(async {
+    //     read_delta_table(&path, options).await
+    // });
+
+    // let ldf:LazyFrame = match table {
+    //     Ok(table) => table,
+    //     Err(err) => return Err(napi::Error::from_reason(err.to_string()))
+    // };
+
+    // Ok(LazyFrame::from(ldf).into())
+    Ok({})
 }
