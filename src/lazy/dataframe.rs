@@ -4,7 +4,7 @@ use crate::prelude::*;
 use polars::prelude::sync_on_close::SyncOnCloseType;
 use polars::prelude::{lit, ClosedWindow, JoinType};
 use polars_core::query_result::QueryResult;
-use polars_io::{HiveOptions, RowIndex};
+use polars_io::{ExternalCompression, HiveOptions, RowIndex};
 use polars_utils::slice_enum::Slice;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -674,14 +674,14 @@ impl JsLazyFrame {
         &self,
         path: String,
         options: Wrap<CsvWriterOptions>,
-        cloud_options: Option<HashMap<String, Wrap<AnyValue>>>,
+        sink_options: SinkCsvOptions<'_>,
     ) -> napi::Result<JsLazyFrame> {
-        let cloud_options = parse_cloud_options(&path, cloud_options);
+        let cloud_options = parse_cloud_options(&path, sink_options.cloud_options);
 
         let unified_sink_args = UnifiedSinkArgs {
-            mkdir: true,
-            maintain_order: true,
-            sync_on_close: SyncOnCloseType::default(),
+            mkdir: sink_options.mkdir.unwrap_or(false),
+            maintain_order: sink_options.maintain_order.unwrap_or(true),
+            sync_on_close: sink_options.sync_on_close.0,
             cloud_options: cloud_options.map(Arc::new),
             sinked_paths_callback: None,
         };
@@ -701,20 +701,19 @@ impl JsLazyFrame {
     pub fn sink_parquet(
         &self,
         path: String,
-        options: SinkParquetOptions,
+        options: SinkParquetOptions<'_>,
     ) -> napi::Result<JsLazyFrame> {
         let compression_str = options.compression.unwrap_or("zstd".to_string());
         let compression = parse_parquet_compression(compression_str, options.compression_level)?;
-        let statistics = if options.statistics.unwrap_or(true) {
-            StatisticsOptions::full()
-        } else {
-            StatisticsOptions::empty()
-        };
+        let statistics = options
+            .statistics
+            .map(|s| s.0)
+            .unwrap_or_else(StatisticsOptions::default);
         let row_group_size = options.row_group_size.map(|i| i as usize);
         let data_page_size = options.data_pagesize_limit.map(|i| i as usize);
         let cloud_options = parse_cloud_options(&path, options.cloud_options);
 
-        let options = ParquetWriteOptions {
+        let write_options = ParquetWriteOptions {
             compression,
             statistics,
             row_group_size,
@@ -727,9 +726,12 @@ impl JsLazyFrame {
         };
 
         let unified_sink_args = UnifiedSinkArgs {
-            mkdir: true,
-            maintain_order: true,
-            sync_on_close: SyncOnCloseType::default(),
+            mkdir: options.mkdir.unwrap_or(false),
+            maintain_order: options.maintain_order.unwrap_or(true),
+            sync_on_close: options
+                .sync_on_close
+                .map(|s| s.0)
+                .unwrap_or(SyncOnCloseType::default()),
             cloud_options: cloud_options.map(Arc::new),
             sinked_paths_callback: None,
         };
@@ -738,7 +740,7 @@ impl JsLazyFrame {
         let rldf = ldf
             .sink(
                 target,
-                FileWriteFormat::Parquet(Arc::new(options)),
+                FileWriteFormat::Parquet(Arc::new(write_options)),
                 unified_sink_args,
             )
             .map_err(JsPolarsErr::from)?;
@@ -753,15 +755,33 @@ impl JsLazyFrame {
         };
 
         let unified_sink_args = UnifiedSinkArgs {
-            mkdir: options.mkdir.unwrap_or(true),
+            mkdir: options.mkdir.unwrap_or(false),
             maintain_order: options.maintain_order.unwrap_or(true),
             sync_on_close: options.sync_on_close.0,
             cloud_options: cloud_options.map(Arc::new),
             sinked_paths_callback: None,
         };
 
+        let compression_level = options
+            .compression_level
+            .map(|x| {
+                u32::try_from(x).map_err(|_| {
+                    napi::Error::from_reason("compressionLevel must be >= 0".to_owned())
+                })
+            })
+            .transpose()?;
+        let compression = ExternalCompression::try_from(
+            options
+                .compression
+                .unwrap_or_else(|| "uncompressed".to_owned())
+                .as_str(),
+            compression_level,
+        )
+        .map_err(JsPolarsErr::from)?;
+
         let nd_options = NDJsonWriterOptions {
-            ..Default::default()
+            compression,
+            check_extension: options.check_extension.unwrap_or(true),
         };
 
         let rldf = self
@@ -799,7 +819,7 @@ impl JsLazyFrame {
             target: SinkTarget::Path(PlRefPath::new(&path)),
         };
         let unified_sink_args = UnifiedSinkArgs {
-            mkdir: options.mkdir.unwrap_or(true),
+            mkdir: options.mkdir.unwrap_or(false),
             maintain_order: options.maintain_order.unwrap_or(true),
             sync_on_close: options.sync_on_close.0,
             cloud_options: cloud_options.map(Arc::new),
@@ -816,7 +836,7 @@ impl JsLazyFrame {
 }
 
 #[napi(object)]
-pub struct ScanCsvOptions {
+pub struct ScanCsvOptions<'a> {
     pub infer_schema_length: Option<u32>,
     pub cache: Option<bool>,
     pub overwrite_dtype: Option<HashMap<String, Wrap<DataType>>>,
@@ -825,6 +845,7 @@ pub struct ScanCsvOptions {
     pub ignore_errors: bool,
     pub n_rows: Option<u32>,
     pub skip_rows: Option<u32>,
+    pub skip_lines: Option<u32>,
     pub sep: Option<String>,
     pub rechunk: Option<bool>,
     pub columns: Option<Vec<String>>,
@@ -835,17 +856,37 @@ pub struct ScanCsvOptions {
     pub quote_char: Option<String>,
     pub parse_dates: Option<bool>,
     pub skip_rows_after_header: u32,
-    pub row_count: Option<JsRowCount>,
+    pub row_index_name: Option<String>,
+    pub row_index_offset: Option<u32>,
     pub null_values: Option<Wrap<NullValues>>,
     pub missing_utf8_is_empty_string: Option<bool>,
     pub raise_if_empty: Option<bool>,
     pub truncate_ragged_lines: Option<bool>,
+    pub decimal_comma: Option<bool>,
+    pub glob: Option<bool>,
     pub schema: Option<Wrap<Schema>>,
+    pub n_threads: Option<u32>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub include_file_paths: Option<String>,
+    pub missing_columns: Option<String>,
 }
 #[napi(catch_unwind)]
-pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFrame> {
+pub fn scan_csv(path: String, options: ScanCsvOptions<'_>) -> napi::Result<JsLazyFrame> {
     let n_rows = options.n_rows.map(|i| i as usize);
-    let row_count = options.row_count.map(RowIndex::from);
+    let row_index = parse_row_index(options.row_index_name, options.row_index_offset);
+    let missing_columns = match options.missing_columns.as_deref() {
+        None => None,
+        Some("insert") => Some(MissingColumnsPolicy::Insert),
+        Some("raise") => Some(MissingColumnsPolicy::Raise),
+        Some(e) => {
+            return Err(JsPolarsErr::Other(format!(
+                "missingColumns must be one of 'insert' or 'raise', got '{}'.",
+                e
+            ))
+            .into())
+        }
+    };
+    let cloud_options = parse_cloud_options(&path, options.cloud_options);
     let missing_utf8_is_empty_string: bool = options.missing_utf8_is_empty_string.unwrap_or(false);
     let quote_char = single_byte_option(options.quote_char, "quote_char")?;
     let separator = single_byte_required(options.sep.as_deref().unwrap_or(","), "sep")?;
@@ -873,7 +914,9 @@ pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFra
         .with_has_header(options.has_header.unwrap_or(true))
         .with_ignore_errors(options.ignore_errors)
         .with_skip_rows(options.skip_rows.unwrap_or(0) as usize)
+        .with_skip_lines(options.skip_lines.unwrap_or(0) as usize)
         .with_n_rows(n_rows)
+        .with_n_threads(options.n_threads.map(|i| i as usize))
         .with_cache(options.cache.unwrap_or(true))
         .with_dtype_overwrite(overwrite_dtype.map(Arc::new))
         .with_schema(options.schema.map(|schema| Arc::new(schema.0)))
@@ -888,66 +931,104 @@ pub fn scan_csv(path: String, options: ScanCsvOptions) -> napi::Result<JsLazyFra
         .with_rechunk(options.rechunk.unwrap_or(false))
         .with_skip_rows_after_header(options.skip_rows_after_header as usize)
         .with_encoding(encoding)
-        .with_row_index(row_count)
+        .with_row_index(row_index)
         .with_try_parse_dates(options.parse_dates.unwrap_or(false))
         .with_null_values(options.null_values.map(|s| s.0))
         .with_missing_is_null(!missing_utf8_is_empty_string)
         .with_truncate_ragged_lines(options.truncate_ragged_lines.unwrap_or(false))
         .with_raise_if_empty(options.raise_if_empty.unwrap_or(true))
+        .with_decimal_comma(options.decimal_comma.unwrap_or(false))
+        .with_glob(options.glob.unwrap_or(true))
+        .with_cloud_options(cloud_options)
+        .with_include_file_paths(options.include_file_paths.map(PlSmallStr::from))
+        .with_missing_columns_policy(missing_columns)
         .finish()
         .map_err(JsPolarsErr::from)?;
     Ok(r.into())
 }
 
 #[napi(catch_unwind)]
-pub fn scan_parquet(path: String, options: ScanParquetOptions) -> napi::Result<JsLazyFrame> {
+pub fn scan_parquet(path: String, options: ScanParquetOptions<'_>) -> napi::Result<JsLazyFrame> {
     let n_rows = options.n_rows.map(|i| i as usize);
-    let cache = options.cache.unwrap_or(true);
-    let glob = options.glob.unwrap_or(true);
-    let parallel = options.parallel;
-
-    let row_index: Option<RowIndex> = if let Some(idn) = options.row_index_name {
-        Some(RowIndex {
-            name: idn.into(),
-            offset: options.row_index_offset.unwrap_or(0),
-        })
-    } else {
-        None
-    };
-
-    let rechunk = options.rechunk.unwrap_or(false);
-    let low_memory = options.low_memory.unwrap_or(false);
-    let use_statistics = options.use_statistics.unwrap_or(false);
+    let row_index: Option<RowIndex> = options.row_index_name.map(|name| RowIndex {
+        name: name.into(),
+        offset: options.row_index_offset.unwrap_or(0),
+    });
 
     let cloud_options = parse_cloud_options(&path, options.cloud_options);
-    let hive_schema = options.hive_schema.map(|s| Arc::new(s.0));
-    let schema = options.schema.map(|s| Arc::new(s.0));
     let hive_options = HiveOptions {
         enabled: options.hive_partitioning,
         hive_start_idx: 0,
-        schema: hive_schema,
+        schema: options.hive_schema.map(|s| Arc::new(s.0)),
         try_parse_dates: options.try_parse_hive_dates.unwrap_or(true),
     };
 
-    let include_file_paths = options.include_file_paths;
-    let allow_missing_columns = options.allow_missing_columns.unwrap_or(false);
-
-    let args = ScanArgsParquet {
-        n_rows,
-        cache,
-        parallel: parallel.0,
-        rechunk,
-        row_index,
-        schema,
-        low_memory,
-        cloud_options,
-        use_statistics,
-        hive_options,
-        glob,
-        include_file_paths: include_file_paths.map(PlSmallStr::from),
-        allow_missing_columns,
+    // `allowMissingColumns` is the deprecated spelling of `missingColumns`; an
+    // explicit `missingColumns` wins.
+    let missing_columns_policy = match (options.missing_columns, options.allow_missing_columns) {
+        (Some(p), _) => p.0,
+        (None, Some(true)) => MissingColumnsPolicy::Insert,
+        (None, _) => MissingColumnsPolicy::Raise,
     };
-    let lf = LazyFrame::scan_parquet(PlRefPath::new(&path), args).map_err(JsPolarsErr::from)?;
+
+    let cast_columns_policy = options
+        .cast_options
+        .map(CastColumnsPolicy::try_from)
+        .transpose()?
+        .unwrap_or(CastColumnsPolicy::ERROR_ON_MISMATCH);
+
+    let hidden_file_prefix: Option<Arc<[PlSmallStr]>> =
+        options.hidden_file_prefix.map(|p| match p {
+            Either::A(s) => Arc::from([PlSmallStr::from_string(s)]),
+            Either::B(v) => v.into_iter().map(PlSmallStr::from_string).collect(),
+        });
+
+    let parquet_options = ParquetOptions {
+        schema: options.schema.map(|s| Arc::new(s.0)),
+        parallel: options.parallel.0,
+        low_memory: options.low_memory.unwrap_or(false),
+        use_statistics: options.use_statistics.unwrap_or(true),
+    };
+
+    let unified_scan_args = UnifiedScanArgs {
+        schema: None,
+        cloud_options,
+        hive_options,
+        rechunk: options.rechunk.unwrap_or(false),
+        cache: options.cache.unwrap_or(true),
+        glob: options.glob.unwrap_or(true),
+        hidden_file_prefix,
+        projection: None,
+        column_mapping: None,
+        default_values: None,
+        // `row_index` is applied via `with_row_index` below so the schema is updated.
+        row_index: None,
+        pre_slice: n_rows.map(|len| Slice::Positive { offset: 0, len }),
+        cast_columns_policy,
+        missing_columns_policy,
+        extra_columns_policy: options
+            .extra_columns
+            .map(|p| p.0)
+            .unwrap_or(ExtraColumnsPolicy::Raise),
+        include_file_paths: options.include_file_paths.map(PlSmallStr::from),
+        deletion_files: None,
+        table_statistics: None,
+        row_count: None,
+    };
+
+    // `.into()` infers polars' `Buffer` from `Vec`; we can't name it directly here
+    // because napi's `Buffer` shadows it in this crate's prelude.
+    let sources = ScanSources::Paths(vec![PlRefPath::new(&path)].into());
+
+    let mut lf: LazyFrame = DslBuilder::scan_parquet(sources, parquet_options, unified_scan_args)
+        .map_err(JsPolarsErr::from)?
+        .build()
+        .into();
+
+    if let Some(row_index) = row_index {
+        lf = lf.with_row_index(row_index.name, Some(row_index.offset));
+    }
+
     Ok(lf.into())
 }
 
@@ -956,7 +1037,8 @@ pub struct ScanIPCOptions {
     pub n_rows: Option<i64>,
     pub cache: Option<bool>,
     pub rechunk: Option<bool>,
-    pub row_count: Option<JsRowCount>,
+    pub row_index_name: Option<String>,
+    pub row_index_offset: Option<u32>,
 }
 
 #[napi(catch_unwind)]
@@ -964,7 +1046,7 @@ pub fn scan_ipc(path: String, options: ScanIPCOptions) -> napi::Result<JsLazyFra
     let n_rows = options.n_rows.map(|i| i as usize);
     let cache = options.cache.unwrap_or(true);
     let rechunk = options.rechunk.unwrap_or(false);
-    let row_index: Option<RowIndex> = options.row_count.map(|rc| rc.into());
+    let row_index = parse_row_index(options.row_index_name, options.row_index_offset);
     let options = IpcScanOptions {
         ..Default::default()
     };
@@ -985,25 +1067,53 @@ pub fn scan_ipc(path: String, options: ScanIPCOptions) -> napi::Result<JsLazyFra
 }
 
 #[napi(object)]
-pub struct JsonScanOptions {
+pub struct JsonScanOptions<'a> {
+    /// Maximum number of rows to scan for schema inference. `None` scans the
+    /// whole file (slow); ignored when `schema` is given.
     pub infer_schema_length: Option<i64>,
-    pub batch_size: i64,
-    pub n_threads: Option<i64>,
-    pub num_rows: Option<i64>,
-    pub skip_rows: Option<i64>,
+    pub batch_size: Option<i64>,
+    pub n_rows: Option<i64>,
     pub low_memory: Option<bool>,
-    pub row_count: Option<JsRowCount>,
+    pub rechunk: Option<bool>,
+    pub ignore_errors: Option<bool>,
+    pub schema: Option<Wrap<Schema>>,
+    pub schema_overrides: Option<Wrap<Schema>>,
+    pub row_index_name: Option<String>,
+    pub row_index_offset: Option<u32>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub include_file_paths: Option<String>,
 }
 
 #[napi(catch_unwind)]
-pub fn scan_json(path: String, options: JsonScanOptions) -> napi::Result<JsLazyFrame> {
-    let batch_size = options.batch_size as usize;
-    let batch_size = NonZeroUsize::new(batch_size);
+pub fn scan_json(path: String, options: JsonScanOptions<'_>) -> napi::Result<JsLazyFrame> {
+    let n_rows = options.n_rows.map(|i| i as usize);
+    let row_index = parse_row_index(options.row_index_name, options.row_index_offset);
+    let cloud_options = parse_cloud_options(&path, options.cloud_options);
+
+    // A `0`/negative value is meaningless here; treat only a positive count as a
+    // bound and anything else as "scan everything".
+    let infer_schema_length = options
+        .infer_schema_length
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(NonZeroUsize::new);
+
     LazyJsonLineReader::new(PlRefPath::new(&path))
-        .with_batch_size(batch_size)
+        .with_batch_size(
+            options
+                .batch_size
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(NonZeroUsize::new),
+        )
+        .with_infer_schema_length(infer_schema_length)
+        .with_schema(options.schema.map(|s| Arc::new(s.0)))
+        .with_schema_overwrite(options.schema_overrides.map(|s| Arc::new(s.0)))
+        .with_ignore_errors(options.ignore_errors.unwrap_or(false))
         .low_memory(options.low_memory.unwrap_or(false))
-        .with_row_index(options.row_count.map(|rc| rc.into()))
-        .with_n_rows(options.num_rows.map(|i| i as usize))
+        .with_rechunk(options.rechunk.unwrap_or(false))
+        .with_row_index(row_index)
+        .with_n_rows(n_rows)
+        .with_cloud_options(cloud_options)
+        .with_include_file_paths(options.include_file_paths.map(PlSmallStr::from))
         .finish()
         .map_err(|err| napi::Error::from_reason(err.to_string()))
         .map(|lf| lf.into())

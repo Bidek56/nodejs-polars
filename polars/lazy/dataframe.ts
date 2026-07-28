@@ -13,7 +13,6 @@ import type {
   CsvWriterOptions,
   LazyCrossJoinOptions,
   LazyDifferentNameColumnJoinOptions,
-  LazyJoinOptions,
   LazyOptions,
   LazySameNameColumnJoinOptions,
   SinkIpcOptions,
@@ -191,13 +190,8 @@ export interface LazyDataFrame<S extends Schema = any>
   /**
    *  __SQL like joins.__
    * @param other - DataFrame to join with.
-   * @param joinOptions.on - Name(s) of the join columns in both DataFrames.
-   * @param joinOptions.how - Join strategy
-   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
-   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns).
-   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
-   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
-   * @see {@link LazyJoinOptions}
+   * @param joinOptions - Join options, including the `on` columns and `how` strategy.
+   * @see {@link LazySameNameColumnJoinOptions}
    * @example
    * ```
    * >>> const df = pl.DataFrame({
@@ -237,14 +231,8 @@ export interface LazyDataFrame<S extends Schema = any>
   /**
    *  __SQL like joins with different names for left and right dataframes.__
    * @param other - DataFrame to join with.
-   * @param joinOptions.leftOn - Name(s) of the left join column(s).
-   * @param joinOptions.rightOn - Name(s) of the right join column(s).
-   * @param joinOptions.how - Join strategy
-   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
-   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns).
-   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
-   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
-   * @see {@link LazyJoinOptions}
+   * @param joinOptions - Join options, including the `leftOn`/`rightOn` columns and `how` strategy.
+   * @see {@link LazyDifferentNameColumnJoinOptions}
    * @example
    * ```
    * >>> const df = pl.DataFrame({
@@ -284,21 +272,8 @@ export interface LazyDataFrame<S extends Schema = any>
   /**
    *  __SQL like cross joins.__
    * @param other - DataFrame to join with.
-   * @param joinOptions.how - Join strategy {'inner', 'left', 'right', 'full', 'semi', 'anti', 'cross'}
-   * @param joinOptions.suffix - Suffix to append to columns with a duplicate name.
-   * @param joinOptions.coalesce - Coalescing behavior (merging of join columns). default: undefined
-   *         - **undefined** - *(Default)* Coalesce unless `how='full'` is specified.
-   *         - **true**      - Always coalesce join columns.
-   *         - **false**     - Never coalesce join columns.
-   * @param joinOptions.validate - Checks if join is of specified type. default: m:m
-   *        valid options: {'m:m', 'm:1', '1:m', '1:1'}
-   *           - **m:m** - *(Default)* Many-to-many (default). Does not result in checks.
-   *           - **1:1** - One-to-one. Checks if join keys are unique in both left and right datasets.
-   *           - **1:m** - One-to-many. Checks if join keys are unique in left dataset.
-   *           - **m:1** - Many-to-one. Check if join keys are unique in right dataset.
-   * @param joinOptions.allowParallel - Allow the physical plan to optionally evaluate the computation of both DataFrames up to the join in parallel.
-   * @param joinOptions.forceParallel - Force the physical plan to evaluate the computation of both DataFrames up to the join in parallel.
-   * @see {@link LazyJoinOptions}
+   * @param joinOptions - Join options; `how` must be `'cross'`.
+   * @see {@link LazyCrossJoinOptions}
    * @example
    * ```
    * >>> const df = pl.DataFrame({
@@ -738,10 +713,26 @@ export interface LazyDataFrame<S extends Schema = any>
     @param options.timeFormat A format string, with the specifiers defined by the
         `chrono <https://docs.rs/chrono/latest/chrono/format/strftime/index.html>`_
         Rust crate.
+    @param options.floatScientific - Whether to use scientific form always (true), never (false), or
+        automatically (null) for `Float32` and `Float64` datatypes.
     @param options.floatPrecision - Number of decimal places to write, applied to both `Float32` and `Float64` datatypes.
+    @param options.decimalComma - Use a comma as the decimal separator instead of a period. Default - false
     @param options.nullValue - A string representing null values (defaulting to the empty string).
+    @param options.quoteStyle - Determines the quoting strategy used: 'necessary' (default), 'always',
+        'non_numeric', or 'never'.
+    @param options.compression : {'uncompressed', 'gzip', 'zstd'} - Compression to apply to the output.
+        Default - 'uncompressed'
+    @param options.compressionLevel - The level of compression to use. Only applies to 'gzip' and 'zstd'.
+    @param options.checkExtension - Whether to verify the path's extension matches the chosen
+        `compression`. Default - true
     @param options.maintainOrder - Maintain the order in which data is processed.
         Setting this to `False` will  be slightly faster.
+    @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
+        Also accepts the retry keys `max_retries`, `retry_timeout_ms`, `retry_init_backoff_ms`,
+        `retry_max_backoff_ms`, `retry_base_multiplier`, and `file_cache_ttl`.
+    @param options.syncOnClose : {'none', 'data', 'all'} - Sync to disk when the file is closed.
+        Default - 'none'
+    @param options.mkdir - Recursively create all the directories in the path. Default - false
     @return DataFrame
     Examples
     --------
@@ -769,21 +760,30 @@ export interface LazyDataFrame<S extends Schema = any>
         - "gzip" : min-level: 0, max-level: 10.
         - "brotli" : min-level: 0, max-level: 11.
         - "zstd" : min-level: 1, max-level: 22.
-    @param options.statistics - Write statistics to the parquet headers. This requires extra compute. Default - false
+    @param options.statistics - Write statistics to the parquet headers. This requires extra compute. Default -> true
+
+        Possible values:
+
+        * `true`: enable the default set of statistics. Some statistics may be disabled.
+        * `false`: disable all statistics.
+        * `"full"`: calculate and write all available statistics.
+        * `{ min, max, distinctCount, nullCount }`: enable a specific set of statistics.
+          Keys that are omitted are disabled.
     @param options.rowGroupSize - Size of the row groups in number of rows.
-        If None (default), the chunks of the `DataFrame` are
+        If not set, the chunks of the `DataFrame` are
         used. Writing in smaller chunks may reduce memory pressure and improve
         writing speeds.
     @param options.dataPagesizeLimit - Size limit of individual data pages.
         If not set defaults to 1024 * 1024 bytes
     @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
-        Setting this to `False` will  be slightly faster.
-    @param options.typeCoercion - Do type coercion optimization. Default -> true
-    @param options.predicatePushdown - Do predicate pushdown optimization. Default -> true
-    @param options.projectionPushdown - Do projection pushdown optimization. Default -> true
-    @param options.simplifyExpression - Run simplify expressions optimization. Default -> true
-    @param options.slicePushdown - Slice pushdown optimization. Default -> true
-    @param options.noOptimization - Turn off (certain) optimizations. Default -> false
+        Setting this to `false` will  be slightly faster.
+    @param options.mkdir - Recursively create all the directories in the path. Default -> false
+    @param options.syncOnClose - { 'none', 'data', 'all' } Default -> 'none'
+            Sync to disk when closing a file.
+
+            * `none` does not sync.
+            * `data` syncs the file contents.
+            * `all` syncs the file contents and metadata.
     @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
         If the cloud provider is not supported by Polars, the storage options are passed to `fsspec.open()`.
 
@@ -810,13 +810,22 @@ export interface LazyDataFrame<S extends Schema = any>
    * 
    * Parameters
     @param path - File path to which the file should be written.
+    @param options.compression : {'uncompressed', 'gzip', 'zstd'} Default -> 'uncompressed'
+        What compression format to use.
+    @param options.compressionLevel - The compression level to use, typically 0-9, or
+        undefined to let the engine choose.
+    @param options.checkExtension - Whether to check if the filename matches the compression
+        settings. Default -> true
+        Will raise an error if compression is set to 'uncompressed' and the filename ends in
+        one of (".gz", ".zst", ".zstd") or if compression != 'uncompressed' and the file uses
+        a mismatched extension.
     @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
         Setting this to `False` will  be slightly faster.
     @param options.mkdir - Recursively create all the directories in the path. Default -> false
-    @param options.syncOnClose - { None, 'data', 'all' } Default -> 'all'
+    @param options.syncOnClose - { 'none', 'data', 'all' } Default -> 'none'
             Sync to disk when before closing a file.
 
-            * `None` does not sync.
+            * `none` does not sync.
             * `data` syncs the file contents.
             * `all` syncs the file contents and metadata.
     @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
@@ -852,10 +861,10 @@ export interface LazyDataFrame<S extends Schema = any>
     @param options.maintainOrder - Maintain the order in which data is processed. Default -> true
         Setting this to `False` will  be slightly faster.
     @param options.mkdir - Recursively create all the directories in the path. Default -> false
-    @param options.syncOnClose - { None, 'data', 'all' } Default -> 'all'
+    @param options.syncOnClose - { 'none', 'data', 'all' } Default -> 'none'
             Sync to disk when before closing a file.
 
-            * `None` does not sync.
+            * `none` does not sync.
             * `data` syncs the file contents.
             * `all` syncs the file contents and metadata.
     @param options.cloudOptions - Options that indicate how to connect to a cloud provider.
@@ -1381,32 +1390,39 @@ export const _LazyDataFrame = (_ldf: any): LazyDataFrame => {
     withRowIndex(name = "index", offset = 0) {
       return _LazyDataFrame(_ldf.withRowIndex(name, offset));
     },
-    sinkCSV(path, options: CsvWriterOptions) {
-      return _ldf.sinkCsv(path, { ...writeCsvDefaultOptions, ...options });
+    sinkCSV(path, options: CsvWriterOptions = {}) {
+      const csvOptions = { ...writeCsvDefaultOptions, ...options };
+      const sinkOptions = {
+        cloudOptions: csvOptions.cloudOptions,
+        syncOnClose: csvOptions.syncOnClose ?? "none",
+        maintainOrder: csvOptions.maintainOrder ?? true,
+        mkdir: csvOptions.mkdir ?? false,
+      };
+      return _LazyDataFrame(_ldf.sinkCsv(path, csvOptions, sinkOptions));
     },
     sinkParquet(path: string, options: SinkParquetOptions = {}) {
       options.compression = options.compression ?? "zstd";
-      options.statistics = options.statistics ?? false;
-      options.sinkOptions = options.sinkOptions ?? {
-        syncOnClose: "all",
-        maintainOrder: false,
-        mkdir: true,
-      };
-      return _ldf.sinkParquet(path, options);
+      options.statistics = options.statistics ?? true;
+      options.syncOnClose = options.syncOnClose ?? "none";
+      options.maintainOrder = options.maintainOrder ?? true;
+      options.mkdir = options.mkdir ?? false;
+      return _LazyDataFrame(_ldf.sinkParquet(path, options));
     },
     sinkNdJson(path: string, options: SinkJsonOptions = {}) {
-      options.syncOnClose = options.syncOnClose ?? "all";
+      options.compression = options.compression ?? "uncompressed";
+      options.checkExtension = options.checkExtension ?? true;
+      options.syncOnClose = options.syncOnClose ?? "none";
       options.maintainOrder = options.maintainOrder ?? true;
-      options.mkdir = options.mkdir ?? true;
-      return _ldf.sinkJson(path, options);
+      options.mkdir = options.mkdir ?? false;
+      return _LazyDataFrame(_ldf.sinkJson(path, options));
     },
     sinkIpc(path: string, options: SinkIpcOptions = {}) {
       options.compatLevel = options.compatLevel ?? "newest";
       options.compression = options.compression ?? "uncompressed";
-      options.syncOnClose = options.syncOnClose ?? "all";
+      options.syncOnClose = options.syncOnClose ?? "none";
       options.maintainOrder = options.maintainOrder ?? true;
-      options.mkdir = options.mkdir ?? true;
-      return _ldf.sinkIpc(path, options);
+      options.mkdir = options.mkdir ?? false;
+      return _LazyDataFrame(_ldf.sinkIpc(path, options));
     },
   };
 };

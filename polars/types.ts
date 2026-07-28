@@ -73,13 +73,22 @@ export interface CsvWriterOptions {
   datetimeFormat?: string;
   dateFormat?: string;
   timeFormat?: string;
+  floatScientific?: boolean;
   floatPrecision?: number;
+  decimalComma?: boolean;
   nullValue?: string;
+  quoteStyle?: "always" | "necessary" | "non_numeric" | "never";
+  compression?: "uncompressed" | "gzip" | "zstd";
+  compressionLevel?: number;
+  checkExtension?: boolean;
   maintainOrder?: boolean;
+  cloudOptions?: Record<string, string | number | boolean>;
+  syncOnClose?: "none" | "data" | "all";
+  mkdir?: boolean;
 }
 
 export interface SinkOptions {
-  syncOnClose: any; // Call sync when closing the file.
+  syncOnClose: "none" | "data" | "all"; // Call sync when closing the file.
   maintainOrder: boolean; // The output file needs to maintain order of the data that comes in.
   mkdir: boolean; // Recursively create all the directories in the path.
 }
@@ -89,30 +98,44 @@ export interface SinkOptions {
  * @category Options
  */
 export interface SinkParquetOptions {
-  compression?: string;
+  compression?:
+    | "uncompressed"
+    | "snappy"
+    | "gzip"
+    | "lzo"
+    | "brotli"
+    | "lz4"
+    | "zstd";
   compressionLevel?: number;
-  statistics?: boolean;
+  statistics?: boolean | "full" | ParquetStatisticsOptions;
   rowGroupSize?: number;
   dataPagesizeLimit?: number;
   maintainOrder?: boolean;
-  typeCoercion?: boolean;
-  predicatePushdown?: boolean;
-  projectionPushdown?: boolean;
-  simplifyExpression?: boolean;
-  slicePushdown?: boolean;
-  noOptimization?: boolean;
-  cloudOptions?: Record<string, string>;
-  retries?: number;
-  sinkOptions?: SinkOptions;
+  cloudOptions?: Record<string, string | number | boolean>;
+  syncOnClose?: "none" | "data" | "all"; // Call sync when closing the file.
+  mkdir?: boolean; // Recursively create all the directories in the path.
+}
+
+/**
+ * Per-statistic toggles for @see {@link SinkParquetOptions.statistics}
+ * @category Options
+ */
+export interface ParquetStatisticsOptions {
+  min?: boolean;
+  max?: boolean;
+  distinctCount?: boolean;
+  nullCount?: boolean;
 }
 /**
  * Options for @see {@link LazyDataFrame.sinkNdJson}
  * @category Options
  */
 export interface SinkJsonOptions {
-  cloudOptions?: Record<string, string>;
-  retries?: number;
-  syncOnClose?: string; // Call sync when closing the file.
+  compression?: "uncompressed" | "gzip" | "zstd";
+  compressionLevel?: number; // The compression level to use, typically 0-9.
+  checkExtension?: boolean; // Whether to check if the filename matches the compression settings.
+  cloudOptions?: Record<string, string | number | boolean>;
+  syncOnClose?: "none" | "data" | "all"; // Call sync when closing the file.
   maintainOrder?: boolean; // The output file needs to maintain order of the data that comes in.
   mkdir?: boolean; // Recursively create all the directories in the path.
 }
@@ -121,11 +144,10 @@ export interface SinkJsonOptions {
  * @category Options
  */
 export interface SinkIpcOptions {
-  compression?: string;
-  compatLevel?: string;
-  cloudOptions?: Record<string, string>;
-  retries?: number;
-  syncOnClose?: string; // Call sync when closing the file.
+  compression?: "uncompressed" | "gzip" | "zstd";
+  compatLevel?: "newest" | "oldest";
+  cloudOptions?: Record<string, string | number | boolean>;
+  syncOnClose?: "none" | "data" | "all"; // Call sync when closing the file.
   maintainOrder?: boolean; // The output file needs to maintain order of the data that comes in.
   mkdir?: boolean; // Recursively create all the directories in the path.
 }
@@ -136,19 +158,6 @@ export interface SinkIpcOptions {
 export interface WriteJsonOptions {
   orient?: "row" | "col" | "dataframe";
   multiline?: boolean;
-}
-
-/**
- * Options for {@link scanJson}
- */
-export interface JsonScanOptions {
-  inferSchemaLength?: number;
-  nThreads?: number;
-  batchSize?: number;
-  lowMemory?: boolean;
-  numRows?: number;
-  skipRows?: number;
-  rowCount?: RowCount;
 }
 
 /**
@@ -170,9 +179,10 @@ export interface WriteParquetOptions {
  */
 export interface ReadParquetOptions {
   columns?: string[] | number[];
-  numRows?: number;
-  parallel?: "auto" | "columns" | "row_groups" | "none";
-  rowCount?: RowCount;
+  nRows?: number;
+  parallel?: "auto" | "columns" | "row_groups" | "prefiltered" | "none";
+  rowIndexName?: string;
+  rowIndexOffset?: number;
 }
 /**
  * Options for {@link scanParquet}
@@ -182,29 +192,73 @@ export interface ScanParquetOptions {
   rowIndexName?: string;
   rowIndexOffset?: number;
   cache?: boolean;
-  parallel?: "auto" | "columns" | "row_groups" | "none";
+  parallel?: "auto" | "columns" | "row_groups" | "prefiltered" | "none";
   glob?: boolean;
+  hiddenFilePrefix?: string | string[];
   hivePartitioning?: boolean;
+  schema?: unknown;
   hiveSchema?: unknown;
   tryParseHiveDates?: boolean;
   rechunk?: boolean;
   lowMemory?: boolean;
   useStatistics?: boolean;
-  cloudOptions?: Record<string, string>;
-  retries?: number;
+  cloudOptions?: Record<string, string | number | boolean>;
   includeFilePaths?: string;
+  missingColumns?: "insert" | "raise";
+  /** @deprecated Use {@link missingColumns} instead. */
   allowMissingColumns?: boolean;
+  extraColumns?: "ignore" | "raise";
+  castOptions?: ScanCastOptions;
 }
 
 /**
- * Add row count as column
+ * Cast options applied when scanning files.
+ * Options for @see {@link ScanParquetOptions.castOptions}
+ * @category Options
  */
-export interface RowCount {
-  /** name of column */
-  name: string;
-  /** offset */
-  offset: number;
+export interface ScanCastOptions {
+  /**
+   * Configuration for casting from integer types:
+   * * `upcast`: Allow lossless casting to wider integer types.
+   * * `allow-float`: Allow casting integers to float types.
+   * * `forbid`: Raises an error if dtypes do not match (default).
+   */
+  integerCast?: IntegerCastOption | IntegerCastOption[];
+  /**
+   * Configuration for casting from float types:
+   * * `upcast`: Allow casting to higher precision float types.
+   * * `downcast`: Allow casting to lower precision float types.
+   * * `forbid`: Raises an error if dtypes do not match (default).
+   */
+  floatCast?: FloatCastOption | FloatCastOption[];
+  /**
+   * Configuration for casting from datetime types:
+   * * `nanosecond-downcast`: Allow nanosecond precision datetime to be downcasted
+   *   to any lower precision.
+   * * `microsecond-downcast`: Allow microsecond precision datetime to be
+   *   downcasted to millisecond precision.
+   * * `downcast`: Allow downcasting to any lower precision (convenience aggregate
+   *   of `nanosecond-downcast` and `microsecond-downcast`).
+   * * `convert-timezone`: Allow casting to a different timezone.
+   * * `forbid`: Raises an error if dtypes do not match (default).
+   */
+  datetimeCast?: DatetimeCastOption | DatetimeCastOption[];
+  /** Behavior when struct fields defined in the schema are missing from the data. Default -> 'raise' */
+  missingStructFields?: "insert" | "raise";
+  /** Behavior when extra struct fields outside the defined schema are encountered. Default -> 'raise' */
+  extraStructFields?: "ignore" | "raise";
+  /** Whether to allow casting categoricals to string. Default -> 'forbid' */
+  categoricalToString?: "allow" | "forbid";
 }
+
+export type IntegerCastOption = "upcast" | "allow-float" | "forbid";
+export type FloatCastOption = "upcast" | "downcast" | "forbid";
+export type DatetimeCastOption =
+  | "nanosecond-downcast"
+  | "microsecond-downcast"
+  | "downcast"
+  | "convert-timezone"
+  | "forbid";
 
 /**
  * Options for {@link DataFrame.writeIPC}
@@ -264,9 +318,21 @@ export type MaintainOrderJoin =
 type CommonJoinOptions = {
   /** Suffix to append to columns with a duplicate name. */
   suffix?: string;
-  /** Coalescing behavior (merging of join columns). */
+  /**
+   * Coalescing behavior (merging of join columns). Default: undefined
+   * - **undefined** - *(Default)* Coalesce unless `how='full'` is specified.
+   * - **true** - Always coalesce join columns.
+   * - **false** - Never coalesce join columns.
+   */
   coalesce?: boolean;
-  // Checks if join is of specified type.
+  /**
+   * Checks if join is of specified type. Default: 'm:m'
+   * Valid options: {'m:m', 'm:1', '1:m', '1:1'}
+   * - **m:m** - *(Default)* Many-to-many. Does not result in checks.
+   * - **1:1** - One-to-one. Checks if join keys are unique in both left and right datasets.
+   * - **1:m** - One-to-many. Checks if join keys are unique in left dataset.
+   * - **m:1** - Many-to-one. Checks if join keys are unique in right dataset.
+   */
   validate?: string;
   /** Join on null values. When false, null values will never produce matches. Default: false */
   nullsEqual?: boolean;
@@ -287,7 +353,7 @@ export type SameNameColumnJoinOptions<
 > = CommonJoinOptions & {
   /** Name(s) of the join columns in both DataFrames. */
   on: ValueOrArray<L & R>;
-  /** Join strategy */
+  /** Join strategy {'inner', 'left', 'right', 'full', 'semi', 'anti'}. Default: 'inner' */
   how?: Exclude<JoinType, "cross">;
 };
 /**
@@ -301,7 +367,7 @@ export type DifferentNameColumnJoinOptions<
   leftOn: ValueOrArray<L>;
   /** Name(s) of the right join column(s). */
   rightOn: ValueOrArray<R>;
-  /** Join strategy */
+  /** Join strategy {'inner', 'left', 'right', 'full', 'semi', 'anti'}. Default: 'inner' */
   how?: Exclude<JoinType, "cross">;
 };
 /**

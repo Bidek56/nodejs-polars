@@ -6,6 +6,7 @@ use polars_core::config::verbose_print_sensitive;
 use polars_core::series::ops::NullBehavior;
 use polars_io::cloud::{CloudOptions, CloudRetryConfig};
 use polars_io::utils::sync_on_close::SyncOnCloseType;
+use polars_io::ExternalCompression;
 use polars_io::RowIndex;
 use polars_utils::compression::{BrotliLevel, GzipLevel, ZstdLevel};
 use polars_utils::total_ord::TotalOrdWrap;
@@ -647,19 +648,14 @@ impl ToNapiValue for Wrap<SyncOnCloseType> {
     }
 }
 
-#[napi(object)]
-pub struct JsRowCount {
-    pub name: String,
-    pub offset: u32,
-}
-
-impl From<JsRowCount> for RowIndex {
-    fn from(o: JsRowCount) -> Self {
-        RowIndex {
-            name: o.name.into(),
-            offset: o.offset,
-        }
-    }
+/// Build a [`RowIndex`] from the `rowIndexName` / `rowIndexOffset` option pair,
+/// mirroring python's `row_index_name` / `row_index_offset`. Returns `None` when
+/// no name was given, since the offset alone has no meaning.
+pub fn parse_row_index(name: Option<String>, offset: Option<u32>) -> Option<RowIndex> {
+    name.map(|name| RowIndex {
+        name: name.into(),
+        offset: offset.unwrap_or(0),
+    })
 }
 
 #[napi(object)]
@@ -702,22 +698,95 @@ impl From<FileSinkOptions> for JsSinkOptions {
 pub struct SinkParquetOptions<'a> {
     pub compression: Option<String>,
     pub compression_level: Option<i32>,
-    pub statistics: Option<bool>,
-    pub row_group_size: Option<i16>,
+    pub statistics: Option<Wrap<StatisticsOptions>>,
+    pub row_group_size: Option<i64>,
     pub data_pagesize_limit: Option<i64>,
     pub maintain_order: Option<bool>,
-    pub type_coercion: Option<bool>,
-    pub predicate_pushdown: Option<bool>,
-    pub projection_pushdown: Option<bool>,
-    pub simplify_expression: Option<bool>,
-    pub slice_pushdown: Option<bool>,
-    pub no_optimization: Option<bool>,
     pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
-    pub sink_options: JsSinkOptions,
+    pub sync_on_close: Option<Wrap<SyncOnCloseType>>,
+    pub mkdir: Option<bool>,
+}
+
+/// Accepts `true` / `false` / `"full"` / `{ min, max, distinctCount, nullCount }`,
+/// mirroring the `statistics` argument of python's `sink_parquet`.
+impl FromNapiValue for Wrap<StatisticsOptions> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let mut ty = 0;
+        check_status!(sys::napi_typeof(env, napi_val, &mut ty))?;
+
+        let stats = match ty {
+            sys::ValueType::napi_boolean => {
+                if bool::from_napi_value(env, napi_val)? {
+                    StatisticsOptions::default()
+                } else {
+                    StatisticsOptions::empty()
+                }
+            }
+            sys::ValueType::napi_string => {
+                let s = String::from_napi_value(env, napi_val)?;
+                match s.as_ref() {
+                    "full" => StatisticsOptions::full(),
+                    v => {
+                        return Err(napi::Error::from_reason(format!(
+                            "`statistics` must be one of {{true, false, 'full'}} or an object, got '{v}'",
+                        )))
+                    }
+                }
+            }
+            sys::ValueType::napi_object => {
+                let obj = Object::from_napi_value(env, napi_val)?;
+                let mut stats = StatisticsOptions::empty();
+                for key in Object::keys(&obj)? {
+                    let value: bool = obj.get_named_property(&key)?;
+                    match key.as_str() {
+                        "min" => stats.min_value = value,
+                        "max" => stats.max_value = value,
+                        "distinctCount" | "distinct_count" => stats.distinct_count = value,
+                        "nullCount" | "null_count" => stats.null_count = value,
+                        v => {
+                            return Err(napi::Error::from_reason(format!(
+                                "unknown `statistics` key '{v}', expected one of {{'min', 'max', 'distinctCount', 'nullCount'}}",
+                            )))
+                        }
+                    }
+                }
+                stats
+            }
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "`statistics` must be a boolean, 'full', or an object".to_owned(),
+                ))
+            }
+        };
+        Ok(Wrap(stats))
+    }
+}
+impl ToNapiValue for Wrap<StatisticsOptions> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let mut obj = Object::new(&Env::from_raw(env))?;
+        obj.set("min", val.0.min_value)?;
+        obj.set("max", val.0.max_value)?;
+        obj.set("distinctCount", val.0.distinct_count)?;
+        obj.set("nullCount", val.0.null_count)?;
+        Object::to_napi_value(env, obj)
+    }
 }
 
 #[napi(object)]
 pub struct SinkJsonOptions<'a> {
+    pub compression: Option<String>,
+    pub compression_level: Option<i32>,
+    pub check_extension: Option<bool>,
+    pub maintain_order: Option<bool>,
+    pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
+    pub sync_on_close: Wrap<SyncOnCloseType>,
+    pub mkdir: Option<bool>,
+}
+
+/// Sink-level options for `sinkCsv`. The CSV serialization options themselves are
+/// read from the same object via `Wrap<CsvWriterOptions>`.
+#[napi(object)]
+pub struct SinkCsvOptions<'a> {
     pub maintain_order: Option<bool>,
     pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
     pub sync_on_close: Wrap<SyncOnCloseType>,
@@ -742,6 +811,7 @@ pub struct ScanParquetOptions<'a> {
     pub cache: Option<bool>,
     pub parallel: Wrap<ParallelStrategy>,
     pub glob: Option<bool>,
+    pub hidden_file_prefix: Option<Either<String, Vec<String>>>,
     pub hive_partitioning: Option<bool>,
     pub hive_schema: Option<Wrap<Schema>>,
     pub try_parse_hive_dates: Option<bool>,
@@ -751,7 +821,166 @@ pub struct ScanParquetOptions<'a> {
     pub use_statistics: Option<bool>,
     pub cloud_options: Option<HashMap<String, Wrap<AnyValue<'a>>>>,
     pub include_file_paths: Option<String>,
+    pub missing_columns: Option<Wrap<MissingColumnsPolicy>>,
     pub allow_missing_columns: Option<bool>,
+    pub extra_columns: Option<Wrap<ExtraColumnsPolicy>>,
+    pub cast_options: Option<JsScanCastOptions>,
+}
+
+impl FromNapiValue for Wrap<MissingColumnsPolicy> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let s = String::from_napi_value(env, napi_val)?;
+        let p = match s.as_ref() {
+            "insert" => MissingColumnsPolicy::Insert,
+            "raise" => MissingColumnsPolicy::Raise,
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "`missingColumns` must be one of {{'insert', 'raise'}}, got '{v}'",
+                )))
+            }
+        };
+        Ok(Wrap(p))
+    }
+}
+impl ToNapiValue for Wrap<MissingColumnsPolicy> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let s = match val.0 {
+            MissingColumnsPolicy::Insert => "insert",
+            MissingColumnsPolicy::Raise => "raise",
+        };
+        String::to_napi_value(env, s.to_owned())
+    }
+}
+
+impl FromNapiValue for Wrap<ExtraColumnsPolicy> {
+    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> JsResult<Self> {
+        let s = String::from_napi_value(env, napi_val)?;
+        let p = match s.as_ref() {
+            "ignore" => ExtraColumnsPolicy::Ignore,
+            "raise" => ExtraColumnsPolicy::Raise,
+            v => {
+                return Err(napi::Error::from_reason(format!(
+                    "`extraColumns` must be one of {{'ignore', 'raise'}}, got '{v}'",
+                )))
+            }
+        };
+        Ok(Wrap(p))
+    }
+}
+impl ToNapiValue for Wrap<ExtraColumnsPolicy> {
+    unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
+        let s = match val.0 {
+            ExtraColumnsPolicy::Ignore => "ignore",
+            ExtraColumnsPolicy::Raise => "raise",
+        };
+        String::to_napi_value(env, s.to_owned())
+    }
+}
+
+/// Mirrors python's `ScanCastOptions`. Each `*Cast` field accepts a single
+/// option string or an array of them; `"forbid"` disables all casts for that
+/// group and may not be combined with other values.
+#[napi(object)]
+pub struct JsScanCastOptions {
+    pub integer_cast: Option<Either<String, Vec<String>>>,
+    pub float_cast: Option<Either<String, Vec<String>>>,
+    pub datetime_cast: Option<Either<String, Vec<String>>>,
+    pub missing_struct_fields: Option<Wrap<MissingColumnsPolicy>>,
+    pub extra_struct_fields: Option<Wrap<ExtraColumnsPolicy>>,
+    pub categorical_to_string: Option<String>,
+}
+
+/// Normalize a `string | string[]` cast-option group into a list, rejecting
+/// `"forbid"` mixed with other values (matching python's behavior).
+fn cast_option_list(field: &str, value: Either<String, Vec<String>>) -> JsResult<Vec<String>> {
+    let values = match value {
+        Either::A(s) => vec![s],
+        Either::B(v) => v,
+    };
+    if values.len() > 1 && values.iter().any(|v| v == "forbid") {
+        return Err(napi::Error::from_reason(format!(
+            "cannot combine 'forbid' with other values in `{field}`",
+        )));
+    }
+    Ok(values)
+}
+
+impl TryFrom<JsScanCastOptions> for CastColumnsPolicy {
+    type Error = napi::Error;
+
+    fn try_from(o: JsScanCastOptions) -> JsResult<Self> {
+        let mut policy = CastColumnsPolicy::ERROR_ON_MISMATCH;
+
+        if let Some(v) = o.integer_cast {
+            for opt in cast_option_list("integerCast", v)? {
+                match opt.as_str() {
+                    "upcast" => policy.integer_upcast = true,
+                    "allow-float" => policy.integer_to_float_cast = true,
+                    "forbid" => {}
+                    v => {
+                        return Err(napi::Error::from_reason(format!(
+                            "`integerCast` must be one of {{'upcast', 'allow-float', 'forbid'}}, got '{v}'",
+                        )))
+                    }
+                }
+            }
+        }
+
+        if let Some(v) = o.float_cast {
+            for opt in cast_option_list("floatCast", v)? {
+                match opt.as_str() {
+                    "upcast" => policy.float_upcast = true,
+                    "downcast" => policy.float_downcast = true,
+                    "forbid" => {}
+                    v => {
+                        return Err(napi::Error::from_reason(format!(
+                        "`floatCast` must be one of {{'upcast', 'downcast', 'forbid'}}, got '{v}'",
+                    )))
+                    }
+                }
+            }
+        }
+
+        if let Some(v) = o.datetime_cast {
+            for opt in cast_option_list("datetimeCast", v)? {
+                match opt.as_str() {
+                    "nanosecond-downcast" => policy.datetime_nanoseconds_downcast = true,
+                    "microsecond-downcast" => policy.datetime_microseconds_downcast = true,
+                    "downcast" => {
+                        policy.datetime_nanoseconds_downcast = true;
+                        policy.datetime_microseconds_downcast = true;
+                    }
+                    "convert-timezone" => policy.datetime_convert_timezone = true,
+                    "forbid" => {}
+                    v => {
+                        return Err(napi::Error::from_reason(format!(
+                            "`datetimeCast` must be one of {{'nanosecond-downcast', 'microsecond-downcast', 'downcast', 'convert-timezone', 'forbid'}}, got '{v}'",
+                        )))
+                    }
+                }
+            }
+        }
+
+        if let Some(v) = o.missing_struct_fields {
+            policy.missing_struct_fields = v.0;
+        }
+        if let Some(v) = o.extra_struct_fields {
+            policy.extra_struct_fields = v.0;
+        }
+        if let Some(v) = o.categorical_to_string {
+            policy.categorical_to_string = match v.as_str() {
+                "allow" => true,
+                "forbid" => false,
+                v => {
+                    return Err(napi::Error::from_reason(format!(
+                        "`categoricalToString` must be one of {{'allow', 'forbid'}}, got '{v}'",
+                    )))
+                }
+            };
+        }
+
+        Ok(policy)
+    }
 }
 
 #[napi(object)]
@@ -996,10 +1225,11 @@ impl FromNapiValue for Wrap<ParallelStrategy> {
             "auto" => ParallelStrategy::Auto,
             "columns" => ParallelStrategy::Columns,
             "row_groups" => ParallelStrategy::RowGroups,
+            "prefiltered" => ParallelStrategy::Prefiltered,
             "none" => ParallelStrategy::None,
             _ => {
                 return Err(invalid_arg(
-                    "expected one of {'auto', 'columns', 'row_groups', 'none'}",
+                    "expected one of {'auto', 'columns', 'row_groups', 'prefiltered', 'none'}",
                 ))
             }
         };
@@ -1083,6 +1313,19 @@ impl FromNapiValue for Wrap<CsvWriterOptions> {
         let quote_style = obj
             .get::<Wrap<QuoteStyle>>("quoteStyle")?
             .map_or(QuoteStyle::default(), |wrap| wrap.0);
+        let decimal_comma = obj.get::<bool>("decimalComma")?.unwrap_or(false);
+        let check_extension = obj.get::<bool>("checkExtension")?.unwrap_or(true);
+        let compression_level = obj
+            .get::<i32>("compressionLevel")?
+            .map(|x| u32::try_from(x).map_err(|_| invalid_arg("`compressionLevel` must be >= 0")))
+            .transpose()?;
+        let compression = ExternalCompression::try_from(
+            obj.get::<String>("compression")?
+                .unwrap_or("uncompressed".to_owned())
+                .as_str(),
+            compression_level,
+        )
+        .map_err(JsPolarsErr::from)?;
 
         let serialize_options = SerializeOptions {
             date_format: date_format.map(PlSmallStr::from_string),
@@ -1095,15 +1338,16 @@ impl FromNapiValue for Wrap<CsvWriterOptions> {
             null: PlSmallStr::from_string(null_value),
             line_terminator: PlSmallStr::from_string(line_terminator),
             quote_style,
-            decimal_comma: false,
+            decimal_comma,
         };
 
         let options = CsvWriterOptions {
             include_bom,
             include_header,
             batch_size,
+            compression,
+            check_extension,
             serialize_options: serialize_options.into(),
-            ..Default::default()
         };
         Ok(Wrap(options))
     }
