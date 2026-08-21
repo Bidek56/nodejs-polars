@@ -624,6 +624,7 @@ impl JsSeries {
     #[napi(catch_unwind)]
     pub fn value_counts(
         &self,
+        env: Env,
         sort: bool,
         parallel: bool,
         name: String,
@@ -633,7 +634,7 @@ impl JsSeries {
             .series
             .value_counts(sort, parallel, PlSmallStr::from_string(name), normalize)
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]

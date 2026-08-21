@@ -42,9 +42,10 @@ pub fn withdraw(env: &Env, size: i64) {
     }
 }
 
-/// Record that a value reported `reported` bytes but withdrew `withdrawn`.
-pub fn record_drift(reported: i64, withdrawn: i64) {
-    let delta = withdrawn - reported;
+
+ /// Record drift between what was reported to V8 and what the value was estimated to be at finalize time.
+ pub fn record_drift(reported: i64, final_estimated: i64) {
+    let delta = final_estimated - reported;
     if delta != 0 {
         DRIFT.fetch_add(delta, Ordering::Relaxed);
     }
