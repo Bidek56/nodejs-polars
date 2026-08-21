@@ -847,9 +847,9 @@ impl JsDataFrame {
         Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
-    pub fn drop_in_place(&mut self, name: String) -> napi::Result<JsSeries> {
+    pub fn drop_in_place(&mut self, env: Env, name: String) -> napi::Result<JsSeries> {
         let s = self.df.drop_in_place(&name).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(s.take_materialized_series()))
+        Ok(JsSeries::reported(s.take_materialized_series(), &env))
     }
     #[napi(catch_unwind)]
     pub fn drop_nulls(&self, env: Env, subset: Option<Vec<String>>) -> napi::Result<JsDataFrame> {
@@ -867,7 +867,7 @@ impl JsDataFrame {
             let df = self.df.drop(&name).map_err(JsPolarsErr::from)?;
             Ok(JsDataFrame::reported(df, &env))
         } else {
-            Ok(JsDataFrame::new(self.df.drop_many([name])))
+            Ok(JsDataFrame::reported(self.df.drop_many([name]), &env))
         }
     }
     #[napi(catch_unwind)]
