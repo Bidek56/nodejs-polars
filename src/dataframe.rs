@@ -57,7 +57,7 @@ impl ObjectFinalize for JsDataFrame {
             // Re-measured rather than cached: tracks a frame that grew after it
             // was reported, at the cost of an unbalanced pair when it did.
             let current = self.df.estimated_size() as i64;
-            crate::memory::withdraw(&env, current);
+            crate::memory::withdraw(&env, self.reported_size);
             crate::memory::record_drift(self.reported_size, current);
         }
         Ok(())

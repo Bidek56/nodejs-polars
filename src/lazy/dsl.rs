@@ -1822,8 +1822,8 @@ pub fn arg_sort_by(by: Vec<&JsExpr>, descending: Vec<bool>) -> JsExpr {
 }
 
 #[napi(catch_unwind)]
-pub fn lit_series(s: &JsSeries) -> JsResult<JsExpr> {
-    Ok(s.clone().series.lit().into())
+pub fn lit_series(s: &JsSeries, env: Env) -> JsResult<JsExpr> {
+    Ok(s.clone(env).series.lit().into())
 }
 
 #[napi(catch_unwind)]

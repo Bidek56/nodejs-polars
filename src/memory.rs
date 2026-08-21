@@ -6,11 +6,11 @@
 //! per request grows without bound.
 //!
 //! `napi_adjust_external_memory` is how we tell V8 about those bytes: we report
-//! a size when the value crosses into JS and withdraw it from the finalizer.
-//! The two calls must cancel out. `estimated_size` is re-measured at finalize
-//! time rather than cached, so a value whose size changed after it was reported
-//! leaves V8's counter off by the difference; `DRIFT` accumulates that error so
-//! it can be inspected from JS instead of silently skewing GC pressure.
+ //! a size when the value crosses into JS and withdraw the same reported size from the finalizer.
+ //!
+ //! `estimated_size` is re-measured at finalize time only to record drift (how
+ //! much the value grew/shrank after it was reported) so the accounting error can
+ //! be inspected from JS.
 
 use napi::Env;
 use std::sync::atomic::{AtomicI64, Ordering};

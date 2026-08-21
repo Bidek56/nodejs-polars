@@ -45,7 +45,7 @@ impl ObjectFinalize for JsSeries {
     fn finalize(self, env: Env) -> napi::Result<()> {
         if self.reported_size != 0 {
             let current = self.series.estimated_size() as i64;
-            crate::memory::withdraw(&env, current);
+            crate::memory::withdraw(&env, self.reported_size);
             crate::memory::record_drift(self.reported_size, current);
         }
         Ok(())
@@ -99,7 +99,7 @@ impl JsSeries {
     }
 
     #[napi(factory, catch_unwind)]
-    pub fn deserialize(buf: Buffer, format: String) -> napi::Result<JsSeries> {
+    pub fn deserialize(env: Env, buf: Buffer, format: String) -> napi::Result<JsSeries> {
         let series: Series = match format.as_ref() {
             "bincode" => {
                 bincode::serde::decode_from_slice(&buf, bin_config())
@@ -114,7 +114,7 @@ impl JsSeries {
                 ))
             }
         };
-        Ok(series.into())
+        Ok(JsSeries::reported(series, &env))
     }
     //
     // FACTORIES
@@ -392,13 +392,13 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn rechunk(&mut self, in_place: bool) -> Option<JsSeries> {
+    pub fn rechunk(&mut self, env: Env, in_place: bool) -> Option<JsSeries> {
         let series = self.series.rechunk();
         if in_place {
             self.series = series;
             None
         } else {
-            Some(series.into())
+            Some(JsSeries::reported(series, &env))
         }
     }
     #[napi(catch_unwind)]
@@ -406,47 +406,43 @@ impl JsSeries {
         Wrap(self.series.get(idx as usize).unwrap())
     }
     #[napi(catch_unwind)]
-    pub fn bitand(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn bitand(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let out = (&self.series & &other.series).map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn bitor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn bitor(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let out = (&self.series | &other.series).map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn bitxor(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn bitxor(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let out = (&self.series ^ &other.series).map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn cum_sum(&self, reverse: Option<bool>) -> napi::Result<JsSeries> {
+    pub fn cum_sum(&self, env: Env, reverse: Option<bool>) -> napi::Result<JsSeries> {
         let reverse = reverse.unwrap_or(false);
-        Ok(cum_sum(&self.series, reverse)
-            .map_err(JsPolarsErr::from)?
-            .into())
+        let out = cum_sum(&self.series, reverse).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn cum_max(&self, reverse: Option<bool>) -> napi::Result<JsSeries> {
+    pub fn cum_max(&self, env: Env, reverse: Option<bool>) -> napi::Result<JsSeries> {
         let reverse = reverse.unwrap_or(false);
-        Ok(cum_max(&self.series, reverse)
-            .map_err(JsPolarsErr::from)?
-            .into())
+        let out = cum_max(&self.series, reverse).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn cum_min(&self, reverse: Option<bool>) -> napi::Result<JsSeries> {
+    pub fn cum_min(&self, env: Env, reverse: Option<bool>) -> napi::Result<JsSeries> {
         let reverse = reverse.unwrap_or(false);
-        Ok(cum_min(&self.series, reverse)
-            .map_err(JsPolarsErr::from)?
-            .into())
+        let out = cum_min(&self.series, reverse).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
-    pub fn cum_prod(&self, reverse: Option<bool>) -> napi::Result<JsSeries> {
+    pub fn cum_prod(&self, env: Env, reverse: Option<bool>) -> napi::Result<JsSeries> {
         let reverse = reverse.unwrap_or(false);
-        Ok(cum_prod(&self.series, reverse)
-            .map_err(JsPolarsErr::from)?
-            .into())
+        let out = cum_prod(&self.series, reverse).map_err(JsPolarsErr::from)?;
+        Ok(JsSeries::reported(out, &env))
     }
     #[napi(catch_unwind)]
     pub fn product(&self) -> Result<JsAnyValue> {
@@ -514,12 +510,12 @@ impl JsSeries {
         self.series.n_chunks() as u32
     }
     #[napi(catch_unwind)]
-    pub fn limit(&self, num_elements: f64) -> JsSeries {
-        self.series.limit(num_elements as usize).into()
+    pub fn limit(&self, env: Env, num_elements: f64) -> JsSeries {
+        JsSeries::reported(self.series.limit(num_elements as usize), &env)
     }
     #[napi(catch_unwind)]
-    pub fn slice(&self, offset: i64, length: f64) -> JsSeries {
-        self.series.slice(offset, length as usize).into()
+    pub fn slice(&self, env: Env, offset: i64, length: f64) -> JsSeries {
+        JsSeries::reported(self.series.slice(offset, length as usize), &env)
     }
     #[napi(catch_unwind)]
     pub fn append(&mut self, other: &JsSeries) -> napi::Result<()> {
@@ -536,52 +532,52 @@ impl JsSeries {
         Ok(())
     }
     #[napi(catch_unwind)]
-    pub fn filter(&self, filter: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn filter(&self, env: Env, filter: &JsSeries) -> napi::Result<JsSeries> {
         let filter_series = &filter.series;
         if let Ok(ca) = filter_series.bool() {
             let series = self.series.filter(ca).map_err(JsPolarsErr::from)?;
-            Ok(JsSeries::new(series))
+            Ok(JsSeries::reported(series, &env))
         } else {
             let err = napi::Error::from_reason("Expected a boolean mask".to_owned());
             Err(err)
         }
     }
     #[napi(catch_unwind)]
-    pub fn add(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn add(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series + &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
     #[napi(catch_unwind)]
-    pub fn sub(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn sub(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series - &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
     #[napi(catch_unwind)]
-    pub fn mul(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn mul(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series * &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
     #[napi(catch_unwind)]
-    pub fn div(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn div(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series / &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
     #[napi(catch_unwind)]
-    pub fn rem(&self, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn rem(&self, env: Env, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series % &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
     #[napi(catch_unwind)]
-    pub fn head(&self, length: Option<i64>) -> JsSeries {
-        (self.series.head(length.map(|l| l as usize))).into()
+    pub fn head(&self, env: Env, length: Option<i64>) -> JsSeries {
+        JsSeries::reported(self.series.head(length.map(|l| l as usize)), &env)
     }
     #[napi(catch_unwind)]
-    pub fn tail(&self, length: Option<i64>) -> JsSeries {
-        (self.series.tail(length.map(|l| l as usize))).into()
+    pub fn tail(&self, env: Env, length: Option<i64>) -> JsSeries {
+        JsSeries::reported(self.series.tail(length.map(|l| l as usize)), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn sort(&mut self, descending: bool, nulls_last: bool) -> napi::Result<JsSeries> {
+    pub fn sort(&mut self, env: Env, descending: bool, nulls_last: bool) -> napi::Result<JsSeries> {
         let sorted: Series = self
             .series
             .sort(
@@ -590,18 +586,20 @@ impl JsSeries {
                     .with_nulls_last(nulls_last),
             )
             .map_err(JsPolarsErr::from)?;
-        Ok(sorted.into())
+        Ok(JsSeries::reported(sorted, &env))
     }
 
     #[napi]
     pub fn argsort(
         &self,
+        env: Env,
         descending: bool,
         nulls_last: bool,
         multithreaded: bool,
         maintain_order: bool,
     ) -> JsSeries {
-        self.series
+        let series = self
+            .series
             .arg_sort(SortOptions {
                 descending,
                 nulls_last,
@@ -610,17 +608,18 @@ impl JsSeries {
                 limit: None,
             })
             .into_series()
-            .into()
+            ;
+        JsSeries::reported(series, &env)
     }
     #[napi(catch_unwind)]
-    pub fn unique(&self) -> napi::Result<JsSeries> {
+    pub fn unique(&self, env: Env) -> napi::Result<JsSeries> {
         let unique = self.series.unique().map_err(JsPolarsErr::from)?;
-        Ok(unique.into())
+        Ok(JsSeries::reported(unique, &env))
     }
     #[napi(catch_unwind)]
-    pub fn unique_stable(&self) -> napi::Result<JsSeries> {
+    pub fn unique_stable(&self, env: Env) -> napi::Result<JsSeries> {
         let unique = self.series.unique_stable().map_err(JsPolarsErr::from)?;
-        Ok(unique.into())
+        Ok(JsSeries::reported(unique, &env))
     }
     #[napi(catch_unwind)]
     pub fn value_counts(
@@ -638,9 +637,9 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn arg_unique(&self) -> napi::Result<JsSeries> {
+    pub fn arg_unique(&self, env: Env) -> napi::Result<JsSeries> {
         let arg_unique = self.series.arg_unique().map_err(JsPolarsErr::from)?;
-        Ok(arg_unique.into_series().into())
+        Ok(JsSeries::reported(arg_unique.into_series(), &env))
     }
     #[napi(catch_unwind)]
     pub fn arg_min(&self) -> Option<i64> {
@@ -651,16 +650,16 @@ impl JsSeries {
         self.series.arg_max().map(|v| v as i64)
     }
     #[napi(catch_unwind)]
-    pub fn take(&self, indices: Vec<u32>) -> napi::Result<JsSeries> {
+    pub fn take(&self, env: Env, indices: Vec<u32>) -> napi::Result<JsSeries> {
         let indices = UInt32Chunked::from_vec(PlSmallStr::EMPTY, indices);
         let take = self.series.take(&indices).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(take))
+        Ok(JsSeries::reported(take, &env))
     }
     #[napi(catch_unwind)]
-    pub fn take_with_series(&self, indices: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn take_with_series(&self, env: Env, indices: &JsSeries) -> napi::Result<JsSeries> {
         let idx = indices.series.u32().map_err(JsPolarsErr::from)?;
         let take = self.series.take(idx).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(take))
+        Ok(JsSeries::reported(take, &env))
     }
 
     #[napi(catch_unwind)]
@@ -674,52 +673,53 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn is_null(&self) -> JsSeries {
-        Self::new(self.series.is_null().into_series())
+    pub fn is_null(&self, env: Env) -> JsSeries {
+        JsSeries::reported(self.series.is_null().into_series(), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn is_not_null(&self) -> JsSeries {
-        Self::new(self.series.is_not_null().into_series())
+    pub fn is_not_null(&self, env: Env) -> JsSeries {
+        JsSeries::reported(self.series.is_not_null().into_series(), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn is_not_nan(&self) -> napi::Result<JsSeries> {
+    pub fn is_not_nan(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.is_not_nan().map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn is_nan(&self) -> napi::Result<JsSeries> {
+    pub fn is_nan(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.is_nan().map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn is_finite(&self) -> napi::Result<JsSeries> {
+    pub fn is_finite(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.is_finite().map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn is_infinite(&self) -> napi::Result<JsSeries> {
+    pub fn is_infinite(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.is_infinite().map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn implode(&self) -> napi::Result<JsSeries> {
+    pub fn implode(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.implode().map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn is_unique(&self) -> napi::Result<JsSeries> {
+    pub fn is_unique(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = is_unique(&self.series).map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
 
     #[napi(catch_unwind)]
     pub fn sample_n(
         &self,
+        env: Env,
         n: u32,
         with_replacement: bool,
         shuffle: bool,
@@ -730,12 +730,13 @@ impl JsSeries {
             .series
             .sample_n(n as usize, with_replacement, Some(shuffle), seed)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn sample_frac(
         &self,
+        env: Env,
         frac: f64,
         with_replacement: bool,
         shuffle: bool,
@@ -746,29 +747,29 @@ impl JsSeries {
             .series
             .sample_frac(frac, with_replacement, Some(shuffle), seed)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn is_duplicated(&self) -> napi::Result<JsSeries> {
+    pub fn is_duplicated(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = is_duplicated(&self.series).map_err(JsPolarsErr::from)?;
-        Ok(ca.into_series().into())
+        Ok(JsSeries::reported(ca.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn explode(&self) -> napi::Result<JsSeries> {
+    pub fn explode(&self, env: Env) -> napi::Result<JsSeries> {
         let options = ExplodeOptions {
             empty_as_null: true,
             keep_nulls: true,
         };
         let s = self.series.explode(options).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn gather_every(&self, n: i64, offset: i64) -> napi::Result<JsSeries> {
+    pub fn gather_every(&self, env: Env, n: i64, offset: i64) -> napi::Result<JsSeries> {
         let s = self
             .series
             .gather_every(n as usize, offset as usize)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
     pub fn series_equal(&self, other: &JsSeries, null_equal: bool, strict: bool) -> bool {
@@ -781,62 +782,68 @@ impl JsSeries {
         }
     }
     #[napi(catch_unwind)]
-    pub fn eq(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn eq(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .equal(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
     #[napi(catch_unwind)]
-    pub fn neq(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn neq(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .not_equal(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
     #[napi(catch_unwind)]
-    pub fn gt(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn gt(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .gt(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
     #[napi(catch_unwind)]
-    pub fn gt_eq(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn gt_eq(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .gt_eq(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
     #[napi(catch_unwind)]
-    pub fn lt(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn lt(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .lt(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
     #[napi(catch_unwind)]
-    pub fn lt_eq(&self, rhs: &JsSeries) -> napi::Result<JsSeries> {
-        Ok(Self::new(
+    pub fn lt_eq(&self, env: Env, rhs: &JsSeries) -> napi::Result<JsSeries> {
+        Ok(JsSeries::reported(
             self.series
                 .lt_eq(&rhs.series)
                 .map_err(JsPolarsErr::from)?
                 .into_series(),
+            &env,
         ))
     }
 
@@ -859,9 +866,9 @@ impl JsSeries {
         })
     }
     #[napi(catch_unwind)]
-    pub fn _not(&self) -> napi::Result<JsSeries> {
+    pub fn _not(&self, env: Env) -> napi::Result<JsSeries> {
         let bool = self.series.bool().map_err(JsPolarsErr::from)?;
-        Ok((!bool).into_series().into())
+        Ok(JsSeries::reported((!bool).into_series(), &env))
     }
 
     #[napi(catch_unwind)]
@@ -873,9 +880,9 @@ impl JsSeries {
         self.series.len() as i64
     }
     #[napi(catch_unwind)]
-    pub fn to_physical(&self) -> JsSeries {
+    pub fn to_physical(&self, env: Env) -> JsSeries {
         let s = self.series.to_physical_repr().into_owned();
-        s.into()
+        JsSeries::reported(s, &env)
     }
 
     #[napi(catch_unwind)]
@@ -920,47 +927,47 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn drop_nulls(&self) -> JsSeries {
-        self.series.drop_nulls().into()
+    pub fn drop_nulls(&self, env: Env) -> JsSeries {
+        JsSeries::reported(self.series.drop_nulls(), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn fill_null(&self, strategy: Wrap<FillNullStrategy>) -> napi::Result<JsSeries> {
+    pub fn fill_null(&self, env: Env, strategy: Wrap<FillNullStrategy>) -> napi::Result<JsSeries> {
         let series = self
             .series
             .fill_null(strategy.0)
             .map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn is_in(&self, other: &JsSeries, nulls_equal: bool) -> napi::Result<JsSeries> {
+    pub fn is_in(&self, env: Env, other: &JsSeries, nulls_equal: bool) -> napi::Result<JsSeries> {
         let imploded = other.series.implode().map_err(JsPolarsErr::from)?;
         let series = is_in(&self.series, &imploded.into_series(), nulls_equal)
             .map(|ca| ca.into_series())
             .map_err(JsPolarsErr::from)?;
 
-        Ok(JsSeries::new(series))
+        Ok(JsSeries::reported(series, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn clone(&self) -> JsSeries {
-        JsSeries::new(self.series.clone())
+    pub fn clone(&self, env: Env) -> JsSeries {
+        JsSeries::reported(self.series.clone(), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn shift(&self, periods: i64) -> JsSeries {
+    pub fn shift(&self, env: Env, periods: i64) -> JsSeries {
         let s = self.series.shift(periods);
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(catch_unwind)]
-    pub fn zip_with(&self, mask: &JsSeries, other: &JsSeries) -> napi::Result<JsSeries> {
+    pub fn zip_with(&self, env: Env, mask: &JsSeries, other: &JsSeries) -> napi::Result<JsSeries> {
         let mask = mask.series.bool().map_err(JsPolarsErr::from)?;
         let s = self
             .series
             .zip_with(mask, &other.series)
             .map_err(JsPolarsErr::from)?;
-        Ok(JsSeries::new(s))
+        Ok(JsSeries::reported(s, &env))
     }
 
     // Struct namespace
@@ -983,25 +990,26 @@ impl JsSeries {
     // String Namespace
 
     #[napi(catch_unwind)]
-    pub fn str_lengths(&self) -> napi::Result<JsSeries> {
+    pub fn str_lengths(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.str_len_chars().into_series();
-        Ok(JsSeries::new(s))
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi]
-    pub fn str_contains(&self, pat: String, strict: bool) -> napi::Result<JsSeries> {
+    pub fn str_contains(&self, env: Env, pat: String, strict: bool) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .contains(&pat, strict)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn str_json_decode(
         &self,
+        env: Env,
         dtype: Option<Wrap<DataType>>,
         infer_schema_len: Option<i64>,
     ) -> napi::Result<JsSeries> {
@@ -1012,111 +1020,111 @@ impl JsSeries {
             .json_decode(dt, infer_schema_len)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_json_path_match(&self, pat: Wrap<StringChunked>) -> napi::Result<JsSeries> {
+    pub fn str_json_path_match(&self, env: Env, pat: Wrap<StringChunked>) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .json_path_match(&pat.0)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_replace(&self, pat: String, val: String) -> napi::Result<JsSeries> {
+    pub fn str_replace(&self, env: Env, pat: String, val: String) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .replace(&pat, &val)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_replace_all(&self, pat: String, val: String) -> napi::Result<JsSeries> {
+    pub fn str_replace_all(&self, env: Env, pat: String, val: String) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .replace_all(&pat, &val)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_to_uppercase(&self) -> napi::Result<JsSeries> {
+    pub fn str_to_uppercase(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.to_uppercase().into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_to_lowercase(&self) -> napi::Result<JsSeries> {
+    pub fn str_to_lowercase(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.to_lowercase().into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn str_hex_encode(&self) -> napi::Result<JsSeries> {
+    pub fn str_hex_encode(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.hex_encode().into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn str_hex_decode(&self, strict: bool) -> napi::Result<JsSeries> {
+    pub fn str_hex_decode(&self, env: Env, strict: bool) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .hex_decode(strict)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi]
-    pub fn str_base64_encode(&self) -> napi::Result<JsSeries> {
+    pub fn str_base64_encode(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.base64_encode().into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn str_base64_decode(&self, strict: bool) -> napi::Result<JsSeries> {
+    pub fn str_base64_decode(&self, env: Env, strict: bool) -> napi::Result<JsSeries> {
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca
             .base64_decode(strict)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn str_pad_start(&self, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
+    pub fn str_pad_start(&self, env: Env, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
         let fill_char = parse_fill_char(fill_char)?;
         let vec_ulen = length.into_iter().map(|x| x as u64).collect();
         let chunked_len = UInt64Chunked::from_vec("str_pad_start_length".into(), vec_ulen);
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.pad_start(&chunked_len, fill_char).into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn str_pad_end(&self, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
+    pub fn str_pad_end(&self, env: Env, length: Vec<i64>, fill_char: String) -> napi::Result<JsSeries> {
         let fill_char = parse_fill_char(fill_char)?;
         let vec_ulen = length.into_iter().map(|x| x as u64).collect();
         let chunked_len = UInt64Chunked::from_vec("str_pad_start_length".into(), vec_ulen);
         let ca = self.series.str().map_err(JsPolarsErr::from)?;
         let s = ca.pad_end(&chunked_len, fill_char).into_series();
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn strftime(&self, fmt: String) -> napi::Result<JsSeries> {
+    pub fn strftime(&self, env: Env, fmt: String) -> napi::Result<JsSeries> {
         let s = self.series.strftime(&fmt).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
-    pub fn arr_lengths(&self) -> napi::Result<JsSeries> {
+    pub fn arr_lengths(&self, env: Env) -> napi::Result<JsSeries> {
         let ca = self.series.list().map_err(JsPolarsErr::from)?;
         let s = ca.lst_lengths().into_series();
-        Ok(JsSeries::new(s))
+        Ok(JsSeries::reported(s, &env))
     }
     // #[napi(catch_unwind)]
     // pub fn timestamp(&self, tu: Wrap<TimeUnit>) -> napi::Result<JsSeries> {
@@ -1137,70 +1145,70 @@ impl JsSeries {
         Ok(df.into())
     }
     #[napi(catch_unwind)]
-    pub fn get_list(&self, index: i64) -> Option<JsSeries> {
+    pub fn get_list(&self, env: Env, index: i64) -> Option<JsSeries> {
         if let Ok(ca) = &self.series.list() {
-            Some(ca.get_as_series(index as usize)?.into())
+            Some(JsSeries::reported(ca.get_as_series(index as usize)?, &env))
         } else {
             None
         }
     }
     #[napi(catch_unwind)]
-    pub fn year(&self) -> napi::Result<JsSeries> {
+    pub fn year(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.year().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn month(&self) -> napi::Result<JsSeries> {
+    pub fn month(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.month().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn weekday(&self) -> napi::Result<JsSeries> {
+    pub fn weekday(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.weekday().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn week(&self) -> napi::Result<JsSeries> {
+    pub fn week(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.week().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn day(&self) -> napi::Result<JsSeries> {
+    pub fn day(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.day().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn ordinal_day(&self) -> napi::Result<JsSeries> {
+    pub fn ordinal_day(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.ordinal_day().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn hour(&self) -> napi::Result<JsSeries> {
+    pub fn hour(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.hour().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn minute(&self) -> napi::Result<JsSeries> {
+    pub fn minute(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.minute().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn second(&self) -> napi::Result<JsSeries> {
+    pub fn second(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.second().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn nanosecond(&self) -> napi::Result<JsSeries> {
+    pub fn nanosecond(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.nanosecond().map_err(JsPolarsErr::from)?;
-        Ok(s.into_series().into())
+        Ok(JsSeries::reported(s.into_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn dt_epoch_seconds(&self) -> napi::Result<JsSeries> {
+    pub fn dt_epoch_seconds(&self, env: Env) -> napi::Result<JsSeries> {
         let ms = self
             .series
             .timestamp(TimeUnit::Milliseconds)
             .map_err(JsPolarsErr::from)?;
-        Ok((ms / 1000).into_series().into())
+        Ok(JsSeries::reported((ms / 1000).into_series(), &env))
     }
     #[napi(catch_unwind)]
     pub fn n_unique(&self) -> napi::Result<i64> {
@@ -1209,32 +1217,32 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn is_first_distinct(&self) -> napi::Result<JsSeries> {
+    pub fn is_first_distinct(&self, env: Env) -> napi::Result<JsSeries> {
         let out = is_first_distinct(&self.series)
             .map_err(JsPolarsErr::from)?
             .into_series();
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn round(&self, decimals: u32, mode: Wrap<RoundMode>) -> napi::Result<JsSeries> {
+    pub fn round(&self, env: Env, decimals: u32, mode: Wrap<RoundMode>) -> napi::Result<JsSeries> {
         let s = self
             .series
             .round(decimals, mode.0)
             .map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn floor(&self) -> napi::Result<JsSeries> {
+    pub fn floor(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.floor().map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn ceil(&self) -> napi::Result<JsSeries> {
+    pub fn ceil(&self, env: Env) -> napi::Result<JsSeries> {
         let s = self.series.ceil().map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
     #[napi(catch_unwind)]
     pub fn shrink_to_fit(&mut self) {
@@ -1248,13 +1256,13 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn hash(&self, k0: Wrap<u64>, k1: Wrap<u64>, k2: Wrap<u64>, k3: Wrap<u64>) -> JsSeries {
+    pub fn hash(&self, env: Env, k0: Wrap<u64>, k1: Wrap<u64>, k2: Wrap<u64>, k3: Wrap<u64>) -> JsSeries {
         let seed = PlFixedStateQuality::default().hash_one((k0.0, k1.0, k2.0, k3.0));
         let hb = PlSeedableRandomStateQuality::seed_from_u64(seed);
-        self.series.hash(hb).into_series().into()
+        JsSeries::reported(self.series.hash(hb).into_series(), &env)
     }
     #[napi(catch_unwind)]
-    pub fn reinterpret(&self, signed: bool) -> napi::Result<JsSeries> {
+    pub fn reinterpret(&self, env: Env, signed: bool) -> napi::Result<JsSeries> {
         let dtype = if signed {
             DataType::Int64
         } else {
@@ -1262,18 +1270,19 @@ impl JsSeries {
         };
 
         let s = reinterpret(&self.series, &dtype).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn mode(&self) -> napi::Result<JsSeries> {
+    pub fn mode(&self, env: Env) -> napi::Result<JsSeries> {
         let s = mode::mode(&self.series, false).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn rank(
         &self,
+        env: Env,
         method: Wrap<RankMethod>,
         descending: Option<bool>,
         seed: Option<Wrap<u64>>,
@@ -1284,12 +1293,12 @@ impl JsSeries {
             method: method.0,
             descending: descending,
         };
-        Ok(self.series.rank(options, seed).into())
+        Ok(JsSeries::reported(self.series.rank(options, seed), &env))
     }
     #[napi(catch_unwind)]
-    pub fn diff(&self, n: i64, null_behavior: Wrap<NullBehavior>) -> napi::Result<JsSeries> {
+    pub fn diff(&self, env: Env, n: i64, null_behavior: Wrap<NullBehavior>) -> napi::Result<JsSeries> {
         let s = diff(&self.series, n, null_behavior.0).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
@@ -1308,7 +1317,7 @@ impl JsSeries {
     }
 
     #[napi(catch_unwind)]
-    pub fn cast(&self, dtype: Wrap<DataType>, strict: Option<bool>) -> napi::Result<JsSeries> {
+    pub fn cast(&self, env: Env, dtype: Wrap<DataType>, strict: Option<bool>) -> napi::Result<JsSeries> {
         let strict = strict.unwrap_or(false);
         let dtype = dtype.0;
         let out = if strict {
@@ -1317,37 +1326,37 @@ impl JsSeries {
             self.series.cast(&dtype)
         };
         let out = out.map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn abs(&self) -> napi::Result<JsSeries> {
+    pub fn abs(&self, env: Env) -> napi::Result<JsSeries> {
         let s = abs(&self.series).map_err(JsPolarsErr::from)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn reshape(&self, dims: Vec<i64>) -> napi::Result<JsSeries> {
+    pub fn reshape(&self, env: Env, dims: Vec<i64>) -> napi::Result<JsSeries> {
         let dims = dims
             .into_iter()
             .map(ReshapeDimension::new)
             .collect::<Vec<_>>();
         let out = self.series.reshape_list(&dims).map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn shuffle(&self, seed: Wrap<u64>) -> JsSeries {
-        self.series.shuffle(Some(seed.0)).into()
+    pub fn shuffle(&self, env: Env, seed: Wrap<u64>) -> JsSeries {
+        JsSeries::reported(self.series.shuffle(Some(seed.0)), &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn extend_constant(&self, value: Wrap<AnyValue>, n: i64) -> napi::Result<JsSeries> {
+    pub fn extend_constant(&self, env: Env, value: Wrap<AnyValue>, n: i64) -> napi::Result<JsSeries> {
         let out = self
             .series
             .extend_constant(value.0, n as usize)
             .map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsSeries::reported(out, &env))
     }
 
     #[napi(catch_unwind)]
@@ -1384,6 +1393,7 @@ macro_rules! impl_set_with_mask_wrap {
     ($name:ident, $native:ty, $cast:ident) => {
         #[napi(catch_unwind)]
         pub fn $name(
+            env: Env,
             series: &JsSeries,
             mask: &JsSeries,
             value: Option<Wrap<$native>>,
@@ -1395,7 +1405,7 @@ macro_rules! impl_set_with_mask_wrap {
                 .set(mask, value)
                 .map_err(JsPolarsErr::from)?
                 .into_series();
-            Ok(new.into())
+            Ok(JsSeries::reported(new, &env))
         }
     };
 }
@@ -1404,6 +1414,7 @@ macro_rules! impl_set_with_mask {
     ($name:ident, $native:ty, $cast:ident) => {
         #[napi(catch_unwind)]
         pub fn $name(
+            env: Env,
             series: &JsSeries,
             mask: &JsSeries,
             value: Option<$native>,
@@ -1414,7 +1425,7 @@ macro_rules! impl_set_with_mask {
                 .set(mask, value)
                 .map_err(JsPolarsErr::from)?
                 .into_series();
-            Ok(new.into())
+            Ok(JsSeries::reported(new, &env))
         }
     };
 }
@@ -1467,9 +1478,9 @@ impl_get!(series_get_str, str, utf8, &str);
 macro_rules! impl_arithmetic {
   ($name:ident, $type:ty, $operand:tt) => {
       #[napi(catch_unwind)]
-      pub fn $name(s: &JsSeries, other: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+      pub fn $name(env: Env, s: &JsSeries, other: Wrap<AnyValue>) -> napi::Result<JsSeries> {
           let other: $type = other.try_into()?;
-          Ok(JsSeries::new(&s.series $operand other))
+          Ok(JsSeries::reported(&s.series $operand other, &env))
       }
   };
 }
@@ -1532,9 +1543,9 @@ macro_rules! impl_rhs_arithmetic {
     ($name:ident, $type:ty, $operand:ident) => {
         #[napi(catch_unwind)]
 
-        pub fn $name(s: &JsSeries, other: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, other: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let other: $type = other.try_into()?;
-            Ok(JsSeries::new(other.$operand(&s.series)))
+            Ok(JsSeries::reported(other.$operand(&s.series), &env))
         }
     };
 }
@@ -1593,13 +1604,14 @@ impl_rhs_arithmetic!(series_rem_f64_rhs, f64, rem);
 macro_rules! impl_eq_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series
                     .equal(rhs)
                     .map_err(JsPolarsErr::from)?
                     .into_series(),
+                &env,
             ))
         }
     };
@@ -1620,13 +1632,14 @@ impl_eq_num!(series_eq_str, &str);
 macro_rules! impl_neq_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series
                     .not_equal(rhs)
                     .map_err(JsPolarsErr::from)?
                     .into_series(),
+                &env,
             ))
         }
     };
@@ -1646,10 +1659,11 @@ impl_neq_num!(series_neq_str, &str);
 macro_rules! impl_gt_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series.gt(rhs).map_err(JsPolarsErr::from)?.into_series(),
+                &env,
             ))
         }
     };
@@ -1669,13 +1683,14 @@ impl_gt_num!(series_gt_str, &str);
 macro_rules! impl_gt_eq_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series
                     .gt_eq(rhs)
                     .map_err(JsPolarsErr::from)?
                     .into_series(),
+                &env,
             ))
         }
     };
@@ -1695,10 +1710,11 @@ impl_gt_eq_num!(series_gt_eq_str, &str);
 macro_rules! impl_lt_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series.lt(rhs).map_err(JsPolarsErr::from)?.into_series(),
+                &env,
             ))
         }
     };
@@ -1718,13 +1734,14 @@ impl_lt_num!(series_lt_str, &str);
 macro_rules! impl_lt_eq_num {
     ($name:ident, $type:ty) => {
         #[napi(catch_unwind)]
-        pub fn $name(s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
+        pub fn $name(env: Env, s: &JsSeries, rhs: Wrap<AnyValue>) -> napi::Result<JsSeries> {
             let rhs: $type = rhs.try_into()?;
-            Ok(JsSeries::new(
+            Ok(JsSeries::reported(
                 s.series
                     .lt_eq(rhs)
                     .map_err(JsPolarsErr::from)?
                     .into_series(),
+                &env,
             ))
         }
     };
