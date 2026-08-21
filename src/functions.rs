@@ -1,6 +1,7 @@
 use crate::dataframe::*;
 use crate::export::JsLazyFrame;
 use crate::lazy::dsl::JsExpr;
+use crate::prelude::Env;
 use polars::prelude::{
     concat, concat_lf_diagonal, concat_lf_horizontal, DataFrame, HConcatOptions, LazyFrame,
     UnionArgs,
@@ -8,18 +9,22 @@ use polars::prelude::{
 use polars_core::functions as pl_functions;
 
 #[napi(catch_unwind)]
-pub fn horizontal_concat(dfs: Vec<&JsDataFrame>) -> napi::Result<JsDataFrame> {
+pub fn horizontal_concat(env: Env, dfs: Vec<&JsDataFrame>) -> napi::Result<JsDataFrame> {
     let dfs: Vec<DataFrame> = dfs.iter().map(|df| df.df.clone()).collect();
     let df = pl_functions::concat_df_horizontal(&dfs, true, false, false)
         .map_err(crate::error::JsPolarsErr::from)?;
-    Ok(df.into())
+    let mut df: JsDataFrame = df.into();
+    df.report_to_v8(&env);
+    Ok(df)
 }
 
 #[napi(catch_unwind)]
-pub fn diagonal_concat(dfs: Vec<&JsDataFrame>) -> napi::Result<JsDataFrame> {
+pub fn diagonal_concat(env: Env, dfs: Vec<&JsDataFrame>) -> napi::Result<JsDataFrame> {
     let dfs: Vec<DataFrame> = dfs.iter().map(|df| df.df.clone()).collect();
     let df = pl_functions::concat_df_diagonal(&dfs).map_err(crate::error::JsPolarsErr::from)?;
-    Ok(df.into())
+    let mut df: JsDataFrame = df.into();
+    df.report_to_v8(&env);
+    Ok(df)
 }
 
 #[napi(catch_unwind)]

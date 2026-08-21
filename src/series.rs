@@ -5,16 +5,50 @@ use polars_core::utils::CustomIterTools;
 use polars_utils::aliases::PlFixedStateQuality;
 use std::hash::BuildHasher;
 
-#[napi]
-#[repr(transparent)]
+#[napi(custom_finalize)]
 #[derive(Clone)]
 pub struct JsSeries {
     pub(crate) series: Series,
+    /// Bytes reported to V8 for this series, or 0 if it was never reported.
+    pub(crate) reported_size: i64,
 }
 
 impl JsSeries {
     pub(crate) fn new(series: Series) -> Self {
-        JsSeries { series }
+        JsSeries {
+            series,
+            reported_size: 0,
+        }
+    }
+
+    /// Build a series and report its size to V8 in one step.
+    ///
+    /// Use this at every `#[napi]` boundary that hands a new series to JS, so
+    /// the report is paired with the finalizer's withdrawal.
+    pub(crate) fn reported(series: Series, env: &Env) -> Self {
+        let mut s = JsSeries::new(series);
+        s.report_to_v8(env);
+        s
+    }
+
+    /// Report this series' size to V8. Called as the series crosses into JS.
+    pub(crate) fn report_to_v8(&mut self, env: &Env) {
+        if self.reported_size == 0 {
+            let size = self.series.estimated_size() as i64;
+            crate::memory::report(env, size);
+            self.reported_size = size;
+        }
+    }
+}
+
+impl ObjectFinalize for JsSeries {
+    fn finalize(self, env: Env) -> napi::Result<()> {
+        if self.reported_size != 0 {
+            let current = self.series.estimated_size() as i64;
+            crate::memory::withdraw(&env, current);
+            crate::memory::record_drift(self.reported_size, current);
+        }
+        Ok(())
     }
 }
 impl From<Series> for JsSeries {
@@ -86,101 +120,102 @@ impl JsSeries {
     // FACTORIES
     //
     #[napi(factory, catch_unwind)]
-    pub fn new_int_8_array(name: String, arr: Int8Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_int_8_array(env: Env, name: String, arr: Int8Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_uint8_array(name: String, arr: Uint8Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_uint8_array(env: Env, name: String, arr: Uint8Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_uint8_clamped_array(name: String, arr: Uint8ClampedArray) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_uint8_clamped_array(env: Env, name: String, arr: Uint8ClampedArray) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_int16_array(name: String, arr: Int16Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_int16_array(env: Env, name: String, arr: Int16Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_uint16_array(name: String, arr: Uint16Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_uint16_array(env: Env, name: String, arr: Uint16Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_int32_array(name: String, arr: Int32Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_int32_array(env: Env, name: String, arr: Int32Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_uint32_array(name: String, arr: Uint32Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_uint32_array(env: Env, name: String, arr: Uint32Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_float32_array(name: String, arr: Float32Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_float32_array(env: Env, name: String, arr: Float32Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_float64_array(name: String, arr: Float64Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_float64_array(env: Env, name: String, arr: Float64Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_bigint64_array(name: String, arr: BigInt64Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_bigint64_array(env: Env, name: String, arr: BigInt64Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_biguint64_array(name: String, arr: BigUint64Array) -> JsSeries {
-        Series::new(PlSmallStr::from_string(name), arr).into()
+    pub fn new_biguint64_array(env: Env, name: String, arr: BigUint64Array) -> JsSeries {
+        JsSeries::reported(Series::new(PlSmallStr::from_string(name), arr), &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_str(name: String, val: Wrap<StringChunked>) -> JsSeries {
+    pub fn new_opt_str(env: Env, name: String, val: Wrap<StringChunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_bool(name: String, val: Wrap<BooleanChunked>) -> JsSeries {
+    pub fn new_opt_bool(env: Env, name: String, val: Wrap<BooleanChunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_i32(name: String, val: Wrap<Int32Chunked>) -> JsSeries {
+    pub fn new_opt_i32(env: Env, name: String, val: Wrap<Int32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_i64(name: String, val: Wrap<Int64Chunked>) -> JsSeries {
+    pub fn new_opt_i64(env: Env, name: String, val: Wrap<Int64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_u64(name: String, val: Wrap<UInt64Chunked>) -> JsSeries {
+    pub fn new_opt_u64(env: Env, name: String, val: Wrap<UInt64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_u32(name: String, val: Wrap<UInt32Chunked>) -> JsSeries {
+    pub fn new_opt_u32(env: Env, name: String, val: Wrap<UInt32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_f32(name: String, val: Wrap<Float32Chunked>) -> JsSeries {
+    pub fn new_opt_f32(env: Env, name: String, val: Wrap<Float32Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
 
     #[napi(factory, catch_unwind)]
-    pub fn new_opt_f64(name: String, val: Wrap<Float64Chunked>) -> JsSeries {
+    pub fn new_opt_f64(env: Env, name: String, val: Wrap<Float64Chunked>) -> JsSeries {
         let mut s = val.0.into_series();
         s.rename(PlSmallStr::from_string(name));
-        JsSeries::new(s)
+        JsSeries::reported(s, &env)
     }
 
     #[napi(factory, catch_unwind)]
     pub fn new_opt_date(
+        env: Env,
         name: String,
         values: Vec<napi::Unknown>,
         strict: Option<bool>,
@@ -212,14 +247,15 @@ impl JsSeries {
             }
         }
         let ca: ChunkedArray<Int64Type> = builder.finish();
-        Ok(ca
-            .into_datetime(TimeUnit::Milliseconds, None)
-            .into_series()
-            .into())
+        Ok(JsSeries::reported(
+            ca.into_datetime(TimeUnit::Milliseconds, None).into_series(),
+            &env,
+        ))
     }
 
     #[napi(factory, catch_unwind)]
     pub fn new_any_value(
+        env: Env,
         name: String,
         values: Vec<Wrap<AnyValue>>,
         dtype: Wrap<DataType>,
@@ -234,24 +270,30 @@ impl JsSeries {
         )
         .map_err(JsPolarsErr::from)?;
 
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(factory, catch_unwind)]
-    pub fn new_list(name: String, values: Array, dtype: Wrap<DataType>) -> napi::Result<JsSeries> {
+    pub fn new_list(
+        env: Env,
+        name: String,
+        values: Array,
+        dtype: Wrap<DataType>,
+    ) -> napi::Result<JsSeries> {
         use crate::list_construction::js_arr_to_list;
         let s = js_arr_to_list(&name, &values, &dtype.0)?;
-        Ok(s.into())
+        Ok(JsSeries::reported(s, &env))
     }
 
     #[napi(factory, catch_unwind)]
     pub fn repeat(
+        env: Env,
         name: String,
         val: Wrap<AnyValue>,
         n: i64,
         dtype: Wrap<DataType>,
     ) -> napi::Result<JsSeries> {
-        let s: JsSeries = match dtype.0 {
+        let mut s: JsSeries = match dtype.0 {
             DataType::String => {
                 if let AnyValue::StringOwned(v) = val.0 {
                     let val = v.to_string();
@@ -294,6 +336,7 @@ impl JsSeries {
                 )));
             }
         };
+        s.report_to_v8(&env);
         Ok(s)
     }
     //
@@ -497,7 +540,7 @@ impl JsSeries {
         let filter_series = &filter.series;
         if let Ok(ca) = filter_series.bool() {
             let series = self.series.filter(ca).map_err(JsPolarsErr::from)?;
-            Ok(JsSeries { series })
+            Ok(JsSeries::new(series))
         } else {
             let err = napi::Error::from_reason("Expected a boolean mask".to_owned());
             Err(err)
@@ -506,27 +549,27 @@ impl JsSeries {
     #[napi(catch_unwind)]
     pub fn add(&self, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series + &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series })
+        Ok(JsSeries::new(series))
     }
     #[napi(catch_unwind)]
     pub fn sub(&self, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series - &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series })
+        Ok(JsSeries::new(series))
     }
     #[napi(catch_unwind)]
     pub fn mul(&self, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series * &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series })
+        Ok(JsSeries::new(series))
     }
     #[napi(catch_unwind)]
     pub fn div(&self, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series / &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series })
+        Ok(JsSeries::new(series))
     }
     #[napi(catch_unwind)]
     pub fn rem(&self, other: &JsSeries) -> napi::Result<JsSeries> {
         let series = (&self.series % &other.series).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries { series })
+        Ok(JsSeries::new(series))
     }
     #[napi(catch_unwind)]
     pub fn head(&self, length: Option<i64>) -> JsSeries {

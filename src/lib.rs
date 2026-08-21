@@ -19,6 +19,7 @@ pub mod file;
 pub mod functions;
 pub mod lazy;
 pub mod list_construction;
+pub mod memory;
 pub mod prelude;
 pub mod series;
 pub mod set;
