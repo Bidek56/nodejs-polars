@@ -6,11 +6,11 @@
 //! per request grows without bound.
 //!
 //! `napi_adjust_external_memory` is how we tell V8 about those bytes: we report
- //! a size when the value crosses into JS and withdraw the same reported size from the finalizer.
- //!
- //! `estimated_size` is re-measured at finalize time only to record drift (how
- //! much the value grew/shrank after it was reported) so the accounting error can
- //! be inspected from JS.
+//! a size when the value crosses into JS and withdraw the same reported size from the finalizer.
+//!
+//! `estimated_size` is re-measured at finalize time only to record drift (how
+//! much the value grew/shrank after it was reported) so the accounting error can
+//! be inspected from JS.
 
 use napi::Env;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -21,14 +21,18 @@ static REPORTED: AtomicI64 = AtomicI64::new(0);
 static DRIFT: AtomicI64 = AtomicI64::new(0);
 
 /// Report `size` bytes of Rust-heap data to V8.
-pub fn report(env: &Env, size: i64) {
+/// Returns `true` only if V8 accepted the adjustment.
+pub fn report(env: &Env, size: i64) -> bool {
     if size <= 0 {
-        return;
+        return false;
     }
     // A failure here only costs us GC accuracy, so it must not turn into a
     // thrown error on an otherwise successful conversion.
     if env.adjust_external_memory(size).is_ok() {
         REPORTED.fetch_add(size, Ordering::Relaxed);
+        true
+    } else {
+        false
     }
 }
 
@@ -42,26 +46,10 @@ pub fn withdraw(env: &Env, size: i64) {
     }
 }
 
-
- /// Record drift between what was reported to V8 and what the value was estimated to be at finalize time.
- pub fn record_drift(reported: i64, final_estimated: i64) {
+/// Record drift between what was reported to V8 and what the value was estimated to be at finalize time.
+pub fn record_drift(reported: i64, final_estimated: i64) {
     let delta = final_estimated - reported;
     if delta != 0 {
         DRIFT.fetch_add(delta, Ordering::Relaxed);
     }
-}
-
-/// Net bytes currently reported to V8 by this addon.
-#[napi]
-pub fn reported_external_memory() -> i64 {
-    REPORTED.load(Ordering::Relaxed)
-}
-
-/// Total accounting error from sizes that changed between report and finalize.
-///
-/// A non-zero value means V8's external-memory counter is skewed by this many
-/// bytes and will not self-correct.
-#[napi]
-pub fn external_memory_drift() -> i64 {
-    DRIFT.load(Ordering::Relaxed)
 }

@@ -45,8 +45,9 @@ impl JsDataFrame {
     pub(crate) fn report_to_v8(&mut self, env: &Env) {
         if self.reported_size == 0 {
             let size = self.df.estimated_size() as i64;
-            crate::memory::report(env, size);
-            self.reported_size = size;
+            if crate::memory::report(env, size) {
+                self.reported_size = size;
+            }
         }
     }
 }
@@ -61,11 +62,6 @@ impl ObjectFinalize for JsDataFrame {
             crate::memory::record_drift(self.reported_size, current);
         }
         Ok(())
-    }
-}
-impl From<DataFrame> for JsDataFrame {
-    fn from(s: DataFrame) -> JsDataFrame {
-        JsDataFrame::new(s)
     }
 }
 
@@ -831,9 +827,21 @@ impl JsDataFrame {
         let df = self.df.hstack(&columns).map_err(JsPolarsErr::from)?;
         Ok(JsDataFrame::reported(df, &env))
     }
+    fn resync_size(&mut self, env: &Env) {
+        if self.reported_size == 0 { return; }   // never reported; leave alone
+        let current = self.df.estimated_size() as i64;
+        let delta = current - self.reported_size;
+        if delta > 0 && crate::memory::report(env, delta) {
+            self.reported_size = current;
+        } else if delta < 0 {
+            crate::memory::withdraw(env, -delta);
+            self.reported_size = current;
+        }
+    }
     #[napi(catch_unwind)]
-    pub fn extend(&mut self, df: &JsDataFrame) -> napi::Result<()> {
+    pub fn extend(&mut self, env: Env, df: &JsDataFrame) -> napi::Result<()> {
         self.df.extend(&df.df.clone()).map_err(JsPolarsErr::from)?;
+        self.resync_size(&env);
         Ok(())
     }
     #[napi(catch_unwind)]
@@ -1238,6 +1246,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn unique(
         &self,
+        env: Env,
         subset: Option<Vec<String>>,
         keep: Wrap<UniqueKeepStrategy>,
         maintain_order: bool,
@@ -1253,7 +1262,7 @@ impl JsDataFrame {
                 slice.map(|s| s.0 as (i64, usize)),
             )
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
@@ -1270,15 +1279,15 @@ impl JsDataFrame {
         Ok(s.map(|s| s.take_materialized_series().into()))
     }
     #[napi(catch_unwind)]
-    pub fn hmax(&self) -> napi::Result<Option<JsSeries>> {
-        let s = self.df.max_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.take_materialized_series().into()))
+    pub fn hmax(&self, env: Env) -> napi::Result<Option<JsSeries>> {
+          let s = self.df.max_horizontal().map_err(JsPolarsErr::from)?;
+          Ok(s.map(|s| JsSeries::reported(s.take_materialized_series(), &env)))
     }
 
     #[napi(catch_unwind)]
-    pub fn hmin(&self) -> napi::Result<Option<JsSeries>> {
+    pub fn hmin(&self, env: Env) -> napi::Result<Option<JsSeries>> {
         let s = self.df.min_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.take_materialized_series().into()))
+        Ok(s.map(|s| JsSeries::reported(s.take_materialized_series(), &env)))
     }
 
     #[napi(catch_unwind)]

@@ -13,18 +13,14 @@ pub fn horizontal_concat(env: Env, dfs: Vec<&JsDataFrame>) -> napi::Result<JsDat
     let dfs: Vec<DataFrame> = dfs.iter().map(|df| df.df.clone()).collect();
     let df = pl_functions::concat_df_horizontal(&dfs, true, false, false)
         .map_err(crate::error::JsPolarsErr::from)?;
-    let mut df: JsDataFrame = df.into();
-    df.report_to_v8(&env);
-    Ok(df)
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(catch_unwind)]
 pub fn diagonal_concat(env: Env, dfs: Vec<&JsDataFrame>) -> napi::Result<JsDataFrame> {
     let dfs: Vec<DataFrame> = dfs.iter().map(|df| df.df.clone()).collect();
     let df = pl_functions::concat_df_diagonal(&dfs).map_err(crate::error::JsPolarsErr::from)?;
-    let mut df: JsDataFrame = df.into();
-    df.report_to_v8(&env);
-    Ok(df)
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(catch_unwind)]

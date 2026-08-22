@@ -35,8 +35,9 @@ impl JsSeries {
     pub(crate) fn report_to_v8(&mut self, env: &Env) {
         if self.reported_size == 0 {
             let size = self.series.estimated_size() as i64;
-            crate::memory::report(env, size);
-            self.reported_size = size;
+            if crate::memory::report(env, size) {
+                self.reported_size = size;
+            }
         }
     }
 }
@@ -973,10 +974,9 @@ impl JsSeries {
 
     // Struct namespace
     #[napi(catch_unwind)]
-    pub fn struct_to_frame(&self) -> napi::Result<crate::dataframe::JsDataFrame> {
+    pub fn struct_to_frame(&self, env: Env) -> napi::Result<crate::dataframe::JsDataFrame> {
         let ca = self.series.struct_().map_err(JsPolarsErr::from)?;
-        let df: DataFrame = ca.clone().unnest();
-        Ok(df.into())
+        Ok(JsDataFrame::reported(ca.clone().unnest(), &env))
     }
 
     #[napi(catch_unwind)]
@@ -1135,6 +1135,7 @@ impl JsSeries {
     #[napi(catch_unwind)]
     pub fn to_dummies(
         &self,
+        env: Env,
         separator: Option<String>,
         drop_first: bool,
         drop_nulls: bool,
@@ -1143,7 +1144,7 @@ impl JsSeries {
             .series
             .to_dummies(separator.as_deref(), drop_first, drop_nulls)
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     pub fn get_list(&self, env: Env, index: i64) -> Option<JsSeries> {

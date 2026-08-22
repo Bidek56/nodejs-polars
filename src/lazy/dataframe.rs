@@ -230,7 +230,7 @@ impl JsLazyFrame {
         ldf.cache().into()
     }
     #[napi(catch_unwind)]
-    pub fn collect_sync(&self, engine: Wrap<Engine>) -> napi::Result<JsDataFrame> {
+    pub fn collect_sync(&self, env: Env, engine: Wrap<Engine>) -> napi::Result<JsDataFrame> {
         let df = self
             .ldf
             .clone()
@@ -242,7 +242,7 @@ impl JsLazyFrame {
             })
             .map_err(JsPolarsErr::from)?;
 
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(ts_return_type = "Promise<JsDataFrame>", catch_unwind)]
@@ -252,10 +252,10 @@ impl JsLazyFrame {
     }
 
     #[napi(catch_unwind)]
-    pub fn fetch_sync(&self, n_rows: u32) -> napi::Result<JsDataFrame> {
+    pub fn fetch_sync(&self, env: Env, n_rows: u32) -> napi::Result<JsDataFrame> {
         let ldf = self.ldf.clone();
         let df = ldf.limit(n_rows).collect().map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
@@ -1132,8 +1132,8 @@ impl Task for AsyncFetch {
         Ok(df)
     }
 
-    fn resolve(&mut self, _env: Env, df: DataFrame) -> napi::Result<Self::JsValue> {
-        Ok(df.into())
+    fn resolve(&mut self, env: Env, df: DataFrame) -> napi::Result<Self::JsValue> {
+        Ok(JsDataFrame::reported(df, &env))
     }
 }
 pub struct AsyncCollect(LazyFrame);
@@ -1148,7 +1148,7 @@ impl Task for AsyncCollect {
         Ok(df)
     }
 
-    fn resolve(&mut self, _env: Env, df: DataFrame) -> napi::Result<Self::JsValue> {
-        Ok(df.into())
+    fn resolve(&mut self, env: Env, df: DataFrame) -> napi::Result<Self::JsValue> {
+        Ok(JsDataFrame::reported(df, &env))
     }
 }
