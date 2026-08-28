@@ -14,21 +14,54 @@ use std::hash::BuildHasher;
 use std::io::{BufReader, BufWriter, Cursor};
 use std::num::NonZeroUsize;
 
-#[napi]
-#[repr(transparent)]
+#[napi(custom_finalize)]
 #[derive(Clone)]
 pub struct JsDataFrame {
     pub(crate) df: DataFrame,
+    /// Bytes reported to V8 for this frame, or 0 if it was never reported.
+    /// Only set once the frame crosses into JS; see [`crate::memory`].
+    pub(crate) reported_size: i64,
 }
 
 impl JsDataFrame {
     pub(crate) fn new(df: DataFrame) -> JsDataFrame {
-        JsDataFrame { df }
+        JsDataFrame {
+            df,
+            reported_size: 0,
+        }
+    }
+
+    /// Build a frame and report its size to V8 in one step.
+    ///
+    /// Use this at every `#[napi]` boundary that hands a new frame to JS, so
+    /// the report is paired with the finalizer's withdrawal.
+    pub(crate) fn reported(df: DataFrame, env: &Env) -> JsDataFrame {
+        let mut d = JsDataFrame::new(df);
+        d.report_to_v8(env);
+        d
+    }
+
+    /// Report this frame's size to V8. Called as the frame crosses into JS.
+    pub(crate) fn report_to_v8(&mut self, env: &Env) {
+        if self.reported_size == 0 {
+            let size = self.df.estimated_size() as i64;
+            if crate::memory::report(env, size) {
+                self.reported_size = size;
+            }
+        }
     }
 }
-impl From<DataFrame> for JsDataFrame {
-    fn from(s: DataFrame) -> JsDataFrame {
-        JsDataFrame::new(s)
+
+impl ObjectFinalize for JsDataFrame {
+    fn finalize(self, env: Env) -> napi::Result<()> {
+        if self.reported_size != 0 {
+            // Re-measured rather than cached: tracks a frame that grew after it
+            // was reported, at the cost of an unbalanced pair when it did.
+            let current = self.df.estimated_size() as i64;
+            crate::memory::withdraw(&env, self.reported_size);
+            crate::memory::record_drift(self.reported_size, current);
+        }
+        Ok(())
     }
 }
 
@@ -97,6 +130,7 @@ pub struct ReadCsvOptions {
 }
 
 fn mmap_reader_to_df<'a>(
+    env: &Env,
     csv: impl MmapBytesReader + 'a,
     options: ReadCsvOptions,
 ) -> napi::Result<JsDataFrame> {
@@ -171,17 +205,18 @@ fn mmap_reader_to_df<'a>(
         .finish()
         .map_err(JsPolarsErr::from)?;
 
-    Ok(df.into())
+    Ok(JsDataFrame::reported(df, env))
 }
 
 #[napi(catch_unwind)]
 pub fn read_csv(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadCsvOptions,
 ) -> napi::Result<JsDataFrame> {
     match path_or_buffer {
-        Either::A(path) => mmap_reader_to_df(std::fs::File::open(path)?, options),
-        Either::B(buffer) => mmap_reader_to_df(Cursor::new(buffer.as_ref()), options),
+        Either::A(path) => mmap_reader_to_df(&env, std::fs::File::open(path)?, options),
+        Either::B(buffer) => mmap_reader_to_df(&env, Cursor::new(buffer.as_ref()), options),
     }
 }
 
@@ -198,6 +233,7 @@ pub struct WriteJsonOptions {
 }
 #[napi(catch_unwind)]
 pub fn read_json(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadJsonOptions,
 ) -> napi::Result<JsDataFrame> {
@@ -235,7 +271,7 @@ pub fn read_json(
                 .map_err(JsPolarsErr::from)?
         }
     };
-    Ok(df.into())
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(object)]
@@ -249,6 +285,7 @@ pub struct ReadParquetOptions {
 
 #[napi(catch_unwind)]
 pub fn read_parquet(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadParquetOptions,
     parallel: Wrap<ParallelStrategy>,
@@ -285,7 +322,7 @@ pub fn read_parquet(
         }
     };
     let df = result.map_err(JsPolarsErr::from)?;
-    Ok(JsDataFrame::new(df))
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(object)]
@@ -299,6 +336,7 @@ pub struct ReadIpcOptions {
 
 #[napi(catch_unwind)]
 pub fn read_ipc(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadIpcOptions,
 ) -> napi::Result<JsDataFrame> {
@@ -331,11 +369,12 @@ pub fn read_ipc(
         }
     };
     let df = result.map_err(JsPolarsErr::from)?;
-    Ok(JsDataFrame::new(df))
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(catch_unwind)]
 pub fn read_ipc_stream(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadIpcOptions,
 ) -> napi::Result<JsDataFrame> {
@@ -368,7 +407,7 @@ pub fn read_ipc_stream(
         }
     };
     let df = result.map_err(JsPolarsErr::from)?;
-    Ok(JsDataFrame::new(df))
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(object)]
@@ -380,6 +419,7 @@ pub struct ReadAvroOptions {
 
 #[napi(catch_unwind)]
 pub fn read_avro(
+    env: Env,
     path_or_buffer: Either<String, Buffer>,
     options: ReadAvroOptions,
 ) -> napi::Result<JsDataFrame> {
@@ -410,7 +450,7 @@ pub fn read_avro(
         }
     };
     let df = result.map_err(JsPolarsErr::from)?;
-    Ok(JsDataFrame::new(df))
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 #[napi(catch_unwind)]
@@ -455,7 +495,7 @@ pub fn from_rows(
         })
         .collect();
     let df = DataFrame::from_rows_and_schema(&it, &schema).map_err(JsPolarsErr::from)?;
-    Ok(df.into())
+    Ok(JsDataFrame::reported(df, &env))
 }
 
 fn bin_config() -> bincode::config::Configuration {
@@ -488,7 +528,7 @@ impl JsDataFrame {
     }
 
     #[napi(factory, catch_unwind)]
-    pub fn deserialize(buf: Buffer, format: String) -> napi::Result<JsDataFrame> {
+    pub fn deserialize(env: Env, buf: Buffer, format: String) -> napi::Result<JsDataFrame> {
         let df: DataFrame = match format.as_ref() {
             "bincode" => bincode::serde::decode_from_slice(&buf, bin_config())
                 .map(|(df, _)| df)
@@ -501,20 +541,22 @@ impl JsDataFrame {
                 ))
             }
         };
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(constructor)]
-    pub fn from_columns(columns: Array) -> napi::Result<JsDataFrame> {
+    pub fn from_columns(env: Env, columns: Array) -> napi::Result<JsDataFrame> {
         let cols = to_series_collection(columns)?;
 
         let df =
             DataFrame::new(cols.first().map_or(0, |c| c.len()), cols).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        let mut df = JsDataFrame::new(df);
+        df.report_to_v8(&env);
+        Ok(df)
     }
 
     #[napi(catch_unwind)]
-    pub fn estimated_size(&self) -> u32 {
-        self.df.estimated_size() as u32
+    pub fn estimated_size(&self) -> i64 {
+        self.df.estimated_size() as i64
     }
 
     #[napi(catch_unwind)]
@@ -523,75 +565,79 @@ impl JsDataFrame {
     }
 
     #[napi(catch_unwind)]
-    pub fn add(&self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn add(&self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let df = (&self.df + &s.series).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn sub(&self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn sub(&self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let df = (&self.df - &s.series).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn div(&self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn div(&self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let df = (&self.df / &s.series).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn mul(&self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn mul(&self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let df = (&self.df * &s.series).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn rem(&self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn rem(&self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let df = (&self.df % &s.series).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn add_df(&self, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn add_df(&self, env: Env, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = (&self.df + &s.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn sub_df(&self, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn sub_df(&self, env: Env, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = (&self.df - &s.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn div_df(&self, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn div_df(&self, env: Env, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = (&self.df / &s.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn mul_df(&self, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn mul_df(&self, env: Env, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = (&self.df * &s.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn rem_df(&self, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn rem_df(&self, env: Env, s: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = (&self.df % &s.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn rechunk(&self) -> JsDataFrame {
+    pub fn rechunk(&self, env: Env) -> JsDataFrame {
         let mut df = self.df.clone();
         df.rechunk_mut_par();
-        df.into()
+        JsDataFrame::reported(df, &env)
     }
     #[napi(catch_unwind)]
-    pub fn fill_null(&self, strategy: Wrap<FillNullStrategy>) -> napi::Result<JsDataFrame> {
+    pub fn fill_null(
+        &self,
+        env: Env,
+        strategy: Wrap<FillNullStrategy>,
+    ) -> napi::Result<JsDataFrame> {
         let df = self.df.fill_null(strategy.0).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     #[allow(clippy::too_many_arguments)]
@@ -731,11 +777,11 @@ impl JsDataFrame {
     }
 
     #[napi(catch_unwind)]
-    pub fn with_column(&mut self, s: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn with_column(&mut self, env: Env, s: &JsSeries) -> napi::Result<JsDataFrame> {
         let mut df = self.df.clone();
         df.with_column(s.series.clone().into())
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     /// Get datatypes
@@ -776,14 +822,26 @@ impl JsDataFrame {
         Ok(())
     }
     #[napi(catch_unwind)]
-    pub fn hstack(&self, columns: Array) -> napi::Result<JsDataFrame> {
+    pub fn hstack(&self, env: Env, columns: Array) -> napi::Result<JsDataFrame> {
         let columns = to_series_collection(columns)?;
         let df = self.df.hstack(&columns).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
+    }
+    fn resync_size(&mut self, env: &Env) {
+        if self.reported_size == 0 { return; }   // never reported; leave alone
+        let current = self.df.estimated_size() as i64;
+        let delta = current - self.reported_size;
+        if delta > 0 && crate::memory::report(env, delta) {
+            self.reported_size = current;
+        } else if delta < 0 {
+            crate::memory::withdraw(env, -delta);
+            self.reported_size = current;
+        }
     }
     #[napi(catch_unwind)]
-    pub fn extend(&mut self, df: &JsDataFrame) -> napi::Result<()> {
+    pub fn extend(&mut self, env: Env, df: &JsDataFrame) -> napi::Result<()> {
         self.df.extend(&df.df.clone()).map_err(JsPolarsErr::from)?;
+        self.resync_size(&env);
         Ok(())
     }
     #[napi(catch_unwind)]
@@ -792,45 +850,48 @@ impl JsDataFrame {
         Ok(())
     }
     #[napi(catch_unwind)]
-    pub fn vstack(&self, df: &JsDataFrame) -> napi::Result<JsDataFrame> {
+    pub fn vstack(&self, env: Env, df: &JsDataFrame) -> napi::Result<JsDataFrame> {
         let df = self.df.vstack(&df.df).map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
-    pub fn drop_in_place(&mut self, name: String) -> napi::Result<JsSeries> {
+    pub fn drop_in_place(&mut self, env: Env, name: String) -> napi::Result<JsSeries> {
         let s = self.df.drop_in_place(&name).map_err(JsPolarsErr::from)?;
-        Ok(JsSeries {
-            series: s.take_materialized_series(),
-        })
+        Ok(JsSeries::reported(s.take_materialized_series(), &env))
     }
     #[napi(catch_unwind)]
-    pub fn drop_nulls(&self, subset: Option<Vec<String>>) -> napi::Result<JsDataFrame> {
+    pub fn drop_nulls(&self, env: Env, subset: Option<Vec<String>>) -> napi::Result<JsDataFrame> {
         let df = self
             .df
             .drop_nulls(subset.as_ref().map(|s| s.as_ref()))
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn drop(&self, name: String, strict: Option<bool>) -> napi::Result<JsDataFrame> {
+    pub fn drop(&self, env: Env, name: String, strict: Option<bool>) -> napi::Result<JsDataFrame> {
         // strict (default true) errors on a missing column; non-strict ignores it.
         if strict.unwrap_or(true) {
             let df = self.df.drop(&name).map_err(JsPolarsErr::from)?;
-            Ok(JsDataFrame::new(df))
+            Ok(JsDataFrame::reported(df, &env))
         } else {
-            Ok(JsDataFrame::new(self.df.drop_many([name])))
+            Ok(JsDataFrame::reported(self.df.drop_many([name]), &env))
         }
     }
     #[napi(catch_unwind)]
-    pub fn drop_many(&self, names: Vec<String>, strict: Option<bool>) -> napi::Result<JsDataFrame> {
+    pub fn drop_many(
+        &self,
+        env: Env,
+        names: Vec<String>,
+        strict: Option<bool>,
+    ) -> napi::Result<JsDataFrame> {
         // When strict (default), verify every column exists before dropping.
         if strict.unwrap_or(true) {
             for name in &names {
                 self.df.column(name).map_err(JsPolarsErr::from)?;
             }
         }
-        Ok(JsDataFrame::new(self.df.drop_many(names)))
+        Ok(JsDataFrame::reported(self.df.drop_many(names), &env))
     }
     #[napi(catch_unwind)]
     pub fn select_at_idx(&self, idx: i64) -> Option<JsSeries> {
@@ -853,16 +914,16 @@ impl JsDataFrame {
         Ok(series)
     }
     #[napi(catch_unwind)]
-    pub fn select(&self, selection: Vec<String>) -> napi::Result<JsDataFrame> {
+    pub fn select(&self, env: Env, selection: Vec<String>) -> napi::Result<JsDataFrame> {
         let df = self.df.select(selection).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
-    pub fn filter(&self, mask: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn filter(&self, env: Env, mask: &JsSeries) -> napi::Result<JsDataFrame> {
         let filter_series = &mask.series;
         if let Ok(ca) = filter_series.bool() {
             let df = self.df.filter(ca).map_err(JsPolarsErr::from)?;
-            Ok(JsDataFrame::new(df))
+            Ok(JsDataFrame::reported(df, &env))
         } else {
             Err(napi::Error::from_reason(
                 "Expected a boolean mask".to_owned(),
@@ -870,20 +931,21 @@ impl JsDataFrame {
         }
     }
     #[napi(catch_unwind)]
-    pub fn take(&self, indices: Vec<u32>) -> napi::Result<JsDataFrame> {
+    pub fn take(&self, env: Env, indices: Vec<u32>) -> napi::Result<JsDataFrame> {
         let indices = UInt32Chunked::from_vec(PlSmallStr::EMPTY, indices);
         let df = self.df.take(&indices).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
-    pub fn take_with_series(&self, indices: &JsSeries) -> napi::Result<JsDataFrame> {
+    pub fn take_with_series(&self, env: Env, indices: &JsSeries) -> napi::Result<JsDataFrame> {
         let idx = indices.series.u32().map_err(JsPolarsErr::from)?;
         let df = self.df.take(idx).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     pub fn sort(
         &self,
+        env: Env,
         by_column: Vec<String>,
         descending: Vec<bool>,
         nulls_last: Vec<bool>,
@@ -903,7 +965,7 @@ impl JsDataFrame {
                 },
             )
             .map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     pub fn sort_in_place(
@@ -964,22 +1026,22 @@ impl JsDataFrame {
     }
 
     #[napi(catch_unwind)]
-    pub fn slice(&self, offset: i64, length: i64) -> JsDataFrame {
+    pub fn slice(&self, env: Env, offset: i64, length: i64) -> JsDataFrame {
         let df = self.df.slice(offset as i64, length as usize);
-        df.into()
+        JsDataFrame::reported(df, &env)
     }
 
     #[napi(catch_unwind)]
-    pub fn head(&self, length: Option<i64>) -> JsDataFrame {
+    pub fn head(&self, env: Env, length: Option<i64>) -> JsDataFrame {
         let length = length.map(|l| l as usize);
         let df = self.df.head(length);
-        JsDataFrame::new(df)
+        JsDataFrame::reported(df, &env)
     }
     #[napi(catch_unwind)]
-    pub fn tail(&self, length: Option<i64>) -> JsDataFrame {
+    pub fn tail(&self, env: Env, length: Option<i64>) -> JsDataFrame {
         let length = length.map(|l| l as usize);
         let df = self.df.tail(length);
-        JsDataFrame::new(df)
+        JsDataFrame::reported(df, &env)
     }
     #[napi(catch_unwind)]
     pub fn is_unique(&self) -> napi::Result<JsSeries> {
@@ -1002,6 +1064,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn groupby(
         &self,
+        env: Env,
         by: Vec<String>,
         select: Option<Vec<String>>,
         agg: String,
@@ -1014,7 +1077,7 @@ impl JsDataFrame {
                     None => gb,
                 };
                 let df = gb.groups().map_err(JsPolarsErr::from)?;
-                return Ok(JsDataFrame::new(df));
+                return Ok(JsDataFrame::reported(df, &env));
             }
             "len" => {
                 let by_exprs: Vec<Expr> = by.iter().map(|name| col(name.as_str())).collect();
@@ -1026,7 +1089,7 @@ impl JsDataFrame {
                     .agg([polars::prelude::len().alias("len")])
                     .collect()
                     .map_err(JsPolarsErr::from)?;
-                return Ok(JsDataFrame::new(df));
+                return Ok(JsDataFrame::reported(df, &env));
             }
             _ => {}
         }
@@ -1079,12 +1142,13 @@ impl JsDataFrame {
             .collect()
             .map_err(JsPolarsErr::from)?;
 
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn pivot(
         &self,
+        env: Env,
         values: Vec<String>,
         on: Vec<String>,
         index: Vec<String>,
@@ -1127,16 +1191,17 @@ impl JsDataFrame {
                 PivotColumnNaming::Auto,
             )
             .collect()
-            .map(|df| df.into())
+            .map(|df| JsDataFrame::reported(df, &env))
             .map_err(|e| pivot_error("Could not pivot", e))
     }
     #[napi(catch_unwind)]
-    pub fn clone(&self) -> JsDataFrame {
-        JsDataFrame::new(self.df.clone())
+    pub fn clone(&self, env: Env) -> JsDataFrame {
+        JsDataFrame::reported(self.df.clone(), &env)
     }
     #[napi(catch_unwind)]
     pub fn unpivot(
         &self,
+        env: Env,
         id_vars: Vec<String>,
         value_vars: Vec<String>,
         variable_name: Option<String>,
@@ -1151,12 +1216,13 @@ impl JsDataFrame {
         );
 
         let df = self.df.unpivot2(args).map_err(JsPolarsErr::from)?;
-        Ok(JsDataFrame::new(df))
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn partition_by(
         &self,
+        env: Env,
         groups: Vec<String>,
         stable: bool,
         include_key: bool,
@@ -1167,16 +1233,20 @@ impl JsDataFrame {
             self.df.partition_by(groups, include_key)
         }
         .map_err(JsPolarsErr::from)?;
-        Ok(out.into_iter().map(JsDataFrame::new).collect())
+        Ok(out
+            .into_iter()
+            .map(|df| JsDataFrame::reported(df, &env))
+            .collect())
     }
 
     #[napi(catch_unwind)]
-    pub fn shift(&self, periods: i64) -> JsDataFrame {
-        self.df.shift(periods).into()
+    pub fn shift(&self, env: Env, periods: i64) -> JsDataFrame {
+        JsDataFrame::reported(self.df.shift(periods), &env)
     }
     #[napi(catch_unwind)]
     pub fn unique(
         &self,
+        env: Env,
         subset: Option<Vec<String>>,
         keep: Wrap<UniqueKeepStrategy>,
         maintain_order: bool,
@@ -1192,7 +1262,7 @@ impl JsDataFrame {
                 slice.map(|s| s.0 as (i64, usize)),
             )
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
@@ -1209,15 +1279,15 @@ impl JsDataFrame {
         Ok(s.map(|s| s.take_materialized_series().into()))
     }
     #[napi(catch_unwind)]
-    pub fn hmax(&self) -> napi::Result<Option<JsSeries>> {
-        let s = self.df.max_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.take_materialized_series().into()))
+    pub fn hmax(&self, env: Env) -> napi::Result<Option<JsSeries>> {
+          let s = self.df.max_horizontal().map_err(JsPolarsErr::from)?;
+          Ok(s.map(|s| JsSeries::reported(s.take_materialized_series(), &env)))
     }
 
     #[napi(catch_unwind)]
-    pub fn hmin(&self) -> napi::Result<Option<JsSeries>> {
+    pub fn hmin(&self, env: Env) -> napi::Result<Option<JsSeries>> {
         let s = self.df.min_horizontal().map_err(JsPolarsErr::from)?;
-        Ok(s.map(|s| s.take_materialized_series().into()))
+        Ok(s.map(|s| JsSeries::reported(s.take_materialized_series(), &env)))
     }
 
     #[napi(catch_unwind)]
@@ -1231,6 +1301,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn to_dummies(
         &self,
+        env: Env,
         separator: Option<String>,
         drop_first: bool,
         drop_nulls: bool,
@@ -1239,13 +1310,13 @@ impl JsDataFrame {
             .df
             .to_dummies(separator.as_deref(), drop_first, drop_nulls)
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
-    pub fn null_count(&self) -> JsDataFrame {
+    pub fn null_count(&self, env: Env) -> JsDataFrame {
         let df = self.df.null_count();
-        df.into()
+        JsDataFrame::reported(df, &env)
     }
     #[napi(catch_unwind)]
     pub fn shrink_to_fit(&mut self) {
@@ -1267,6 +1338,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn transpose(
         &mut self,
+        env: Env,
         keep_names_as: Option<String>,
         column_names: Option<Either<String, Vec<String>>>,
     ) -> napi::Result<JsDataFrame> {
@@ -1274,16 +1346,17 @@ impl JsDataFrame {
             Either::A(s) => either::Either::Left(s),
             Either::B(v) => either::Either::Right(v),
         });
-        Ok(self
+        let df = self
             .df
             .transpose(keep_names_as.as_deref(), names)
-            .map_err(JsPolarsErr::from)?
-            .into())
+            .map_err(JsPolarsErr::from)?;
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn sample_n(
         &self,
+        env: Env,
         n: &JsSeries,
         with_replacement: bool,
         shuffle: bool,
@@ -1291,14 +1364,20 @@ impl JsDataFrame {
     ) -> napi::Result<JsDataFrame> {
         let df = self
             .df
-            .sample_n(&n.series, with_replacement, Some(shuffle), seed.map(|s| s as u64))
+            .sample_n(
+                &n.series,
+                with_replacement,
+                Some(shuffle),
+                seed.map(|s| s as u64),
+            )
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn sample_frac(
         &self,
+        env: Env,
         frac: &JsSeries,
         with_replacement: bool,
         shuffle: bool,
@@ -1313,12 +1392,13 @@ impl JsDataFrame {
                 seed.map(|s| s as u64),
             )
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
 
     #[napi(catch_unwind)]
     pub fn upsample(
         &self,
+        env: Env,
         by: Vec<String>,
         index_column: String,
         every: String,
@@ -1331,7 +1411,7 @@ impl JsDataFrame {
             self.df.upsample(by, &index_column, Duration::parse(&every))
         };
         let out = out.map_err(JsPolarsErr::from)?;
-        Ok(out.into())
+        Ok(JsDataFrame::reported(out, &env))
     }
     #[napi(catch_unwind)]
     pub fn to_struct(&self, name: String) -> JsSeries {
@@ -1341,6 +1421,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn unnest(
         &self,
+        env: Env,
         names: Vec<String>,
         separator: Option<String>,
     ) -> napi::Result<JsDataFrame> {
@@ -1349,7 +1430,7 @@ impl JsDataFrame {
             .df
             .unnest(names, separator.as_deref())
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     pub fn to_row<'a>(&self, idx: f64, env: &'a Env) -> napi::Result<Array<'a>> {
@@ -1426,6 +1507,7 @@ impl JsDataFrame {
     #[napi(catch_unwind)]
     pub fn with_row_index(
         &self,
+        env: Env,
         name: String,
         offset: Option<IdxSize>,
     ) -> napi::Result<JsDataFrame> {
@@ -1433,7 +1515,7 @@ impl JsDataFrame {
             .df
             .with_row_index(PlSmallStr::from_string(name), offset)
             .map_err(JsPolarsErr::from)?;
-        Ok(df.into())
+        Ok(JsDataFrame::reported(df, &env))
     }
     #[napi(catch_unwind)]
     pub fn write_csv(
